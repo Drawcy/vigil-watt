@@ -383,14 +383,15 @@ public sealed class TaskbarPillWindow : IDisposable
     }
 
     /// <summary>
-    /// 取要显示的设备。**本机电量恒定排除**：Windows 任务栏自己已经有一个电池图标，
-    /// 再在贴片上重复一遍只是噪音（与托盘"最低电量"不统计本机是同一个理由）。
+    /// 取要显示的设备。本机电池**跟随「监控本机电量」开关**：开了就显示（用户主动要盯），
+    /// 不开就排除（默认；Windows 任务栏已有电池图标，避免重复）。
     /// </summary>
     private static List<DeviceStatus> SelectDevices(out IReadOnlyList<string> overflowNames)
     {
         overflowNames = Array.Empty<string>();
+        bool includeSystem = App.Services.Settings.MonitorSystemBattery;
         var all = App.Services.Manager.Devices
-            .Where(d => d.IsOnline && d.Source != DeviceSource.System)
+            .Where(d => d.IsOnline && (includeSystem || d.Source != DeviceSource.System))
             .Select(d => DevicePresentation.Apply(d, App.Services.Settings))
             .OrderBy(d => DeviceStatusFormatter.IsChargingOrFull(d.Charging))
             .ThenBy(d => d.BatteryPercent ?? 999)
