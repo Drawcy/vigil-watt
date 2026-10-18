@@ -8,7 +8,9 @@ using GdiImaging = System.Drawing.Imaging;
 namespace VigilWatt.App.Services;
 
 /// <summary>
-/// 功 能： 任务栏电量贴片：**真嵌进任务栏**——一个原生分层窗口，<c>SetParent</c> 挂成任务栏 （<c>Shell_TrayWnd</c>）的子窗口，内容用 <c>UpdateLayeredWindow</c> 提交 32 位 ARGB 位图。
+/// 功 能： 任务栏电量贴片：**真嵌进任务栏**——一个原生分层窗口，<c>SetParent</c> 挂成任务栏
+/// （由 <see cref="TaskbarPillManager"/> 选定的那一块，可能是主屏 <c>Shell_TrayWnd</c> 也可能是
+/// 副屏 <c>Shell_SecondaryTrayWnd</c>）的子窗口，内容用 <c>UpdateLayeredWindow</c> 提交 32 位 ARGB 位图。
 /// 2026/10/12 17:20:14 xliu
 /// 三道锁（SetParent / WS_EX_LAYERED / UpdateLayeredWindow）见 docs/dev/runtime-pitfalls.md §16。
 /// </summary>
@@ -31,11 +33,14 @@ public sealed class TaskbarPillWindow : IDisposable
     private static bool _classRegistered;
     private static bool _tipClassRegistered;
 
-    /// <summary>同一时刻只允许一个贴片；窗口过程是静态的，靠它转回实例。</summary>
-    private static TaskbarPillWindow? _current;
+    /// <summary>HWND → 实例映射：窗口过程是静态的，多实例（主屏 + 各副屏）靠它找回自己。</summary>
+    private static readonly Dictionary<IntPtr, TaskbarPillWindow> ByHwnd = new();
 
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     private readonly DispatcherQueueTimer _timer;
+
+    /// <summary>目标任务栏（构造时绑定，Explorer 重启后由 Update 重新解析）。</summary>
+    private readonly IntPtr _preferredTaskbar;
 
     private IntPtr _hwnd, _taskbar, _tipHwnd;
     private IntPtr _memDc, _dib, _oldDib, _dibBits;
@@ -54,6 +59,11 @@ public sealed class TaskbarPillWindow : IDisposable
     private int _refreshQueued;
     private int _rebuildQueued;
     private bool _needRender = true;
+
+    /// <summary>位图内容版本；与上次提交的版本/位置都相同就跳过 Upload（1 秒一拍的逐行拷贝完全是浪费）。</summary>
+    private int _renderSerial;
+    private int _uploadedSerial = -1;
+    private Native.POINT _uploadedPos;
     private bool _disposed;
     private IReadOnlyList<TaskbarPillRenderer.HitChip> _hits = Array.Empty<TaskbarPillRenderer.HitChip>();
     private string? _hoverId;
@@ -61,9 +71,10 @@ public sealed class TaskbarPillWindow : IDisposable
     private bool _tipVisible;
     private bool _hoverArmed;
 
-    public TaskbarPillWindow()
+    /// <param name="taskbar">目标任务栏 HWND（由 <see cref="TaskbarPillManager"/> 按用户选屏结果传入）。</param>
+    public TaskbarPillWindow(IntPtr taskbar)
     {
-        _current = this;
+        _preferredTaskbar = taskbar;
         LoadOffsetFromSettings();
 
         EnsureWindow();
@@ -121,8 +132,6 @@ public sealed class TaskbarPillWindow : IDisposable
         App.Services.Manager.DevicesChanged -= OnDevicesChanged;
         HideTip();
         ReleaseWindow();
-
-        if (ReferenceEquals(_current, this)) _current = null;
     }
 
     // ---------- 窗口 ----------
@@ -162,6 +171,7 @@ public sealed class TaskbarPillWindow : IDisposable
             return;
         }
 
+        lock (ByHwnd) ByHwnd[_hwnd] = this;
         AttachToTaskbar();
         EnsureTipWindow();
         _windowDpi = TaskbarDpi();
@@ -213,13 +223,23 @@ public sealed class TaskbarPillWindow : IDisposable
     private static IntPtr TipWndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam) =>
         Native.DefWindowProcW(hwnd, msg, wParam, lParam);
 
+    /// <summary>解析本实例该挂的任务栏：优先用构造时绑定的；失效（Explorer 重启）时由 Manager 重建。</summary>
+    private IntPtr ResolveTaskbar()
+    {
+        if (_preferredTaskbar != IntPtr.Zero && Native.IsWindow(_preferredTaskbar))
+            return _preferredTaskbar;
+        // 任务栏消失返回零：副屏拔除或 Explorer 重启都交给 Manager 检测后再决定是否销毁本实例
+        return IntPtr.Zero;
+    }
+
     /// <summary>
     /// 挂成任务栏的子窗口。**SetParent 不会自动改 WS_CHILD/WS_POPUP**（MSDN 明确要求自己同步），
     /// 不同步的话坐标仍按桌面算、裁剪也不对。
     /// </summary>
     private void AttachToTaskbar()
     {
-        _taskbar = Native.FindWindowW(Native.TaskbarClassName, null);
+        var taskbar = ResolveTaskbar();
+        _taskbar = taskbar;
         if (_taskbar == IntPtr.Zero || _hwnd == IntPtr.Zero) return;
 
         Native.SetParent(_hwnd, _taskbar);
@@ -250,6 +270,7 @@ public sealed class TaskbarPillWindow : IDisposable
         ReleaseTipWindow();
         if (_hwnd != IntPtr.Zero)
         {
+            lock (ByHwnd) ByHwnd.Remove(_hwnd);
             if (Native.IsWindow(_hwnd)) Native.DestroyWindow(_hwnd);
             _hwnd = IntPtr.Zero;
         }
@@ -263,6 +284,7 @@ public sealed class TaskbarPillWindow : IDisposable
         _hoverId = null;
         _hoverArmed = false;
         _needRender = true;
+        _uploadedSerial = -1;   // 窗口重建后必须重新提交一次位图
     }
 
     // ---------- 更新 ----------
@@ -288,7 +310,7 @@ public sealed class TaskbarPillWindow : IDisposable
         if (_hwnd == IntPtr.Zero) return;
 
         // Explorer 重启会换一个任务栏窗口，旧 HWND 失效，要重新挂
-        var taskbar = Native.FindWindowW(Native.TaskbarClassName, null);
+        var taskbar = ResolveTaskbar();
         if (taskbar == IntPtr.Zero) return;
         if (taskbar != _taskbar || Native.GetParent(_hwnd) != taskbar)
             AttachToTaskbar();
@@ -323,13 +345,13 @@ public sealed class TaskbarPillWindow : IDisposable
     }
 
     /// <summary>找任务栏与托盘矩形（物理像素、屏幕坐标）；<paramref name="hidden"/> 表示自动隐藏已收起。</summary>
-    private static bool TryGetTaskbar(out PixelRect taskbar, out PixelRect tray, out bool hidden)
+    private bool TryGetTaskbar(out PixelRect taskbar, out PixelRect tray, out bool hidden)
     {
         taskbar = default;
         tray = default;
         hidden = false;
 
-        var hwnd = Native.FindWindowW(Native.TaskbarClassName, null);
+        var hwnd = ResolveTaskbar();
         if (hwnd == IntPtr.Zero || !Native.GetWindowRect(hwnd, out var rect)) return false;
 
         taskbar = new PixelRect(rect.Left, rect.Top, rect.Width, rect.Height);
@@ -352,9 +374,8 @@ public sealed class TaskbarPillWindow : IDisposable
 
         var devices = SelectDevices(out var overflowNames);
         var bmp = TaskbarPillRenderer.Render(
-            devices, overflowNames,
-            devices.ToDictionary(d => d.Id, d => App.Services.Manager.GetRemainingTimeEstimate(d)),
-            TaskbarPillRenderer.SkinFor(IsLightTheme()), _pillH, Scale,
+            devices, overflowNames, TaskbarPillRenderer.SkinFor(IsLightTheme()), _pillH, Scale,
+            CustomAccentColors(),
             out int width, out var hits);
 
         _bitmap?.Dispose();
@@ -362,29 +383,49 @@ public sealed class TaskbarPillWindow : IDisposable
         _pillW = width;
         _hits = hits;
         _needRender = false;
+        _renderSerial++;
 
         // 电量刷新很勤：同一台仍在鼠标下则只重摆位置，不重新计悬停
         if (_tipVisible && _shownTipId != null)
             RepositionTipIfStillHovering();
     }
 
+    /// <summary>自定义颜色表（设备 Id → GDI 颜色）；未设置或格式坏的设备不进来，绘制时回落到电量状态色。</summary>
+    private static Dictionary<string, Gdi.Color> CustomAccentColors()
+    {
+        var dict = new Dictionary<string, Gdi.Color>(StringComparer.Ordinal);
+        foreach (var (id, custom) in App.Services.Settings.DeviceCustomizations)
+        {
+            if (UiPalette.TryParseHex(custom.ColorHex) is { } c)
+                dict[id] = UiPalette.ToDrawing(c);
+        }
+        return dict;
+    }
+
     /// <summary>
-    /// 取要显示的设备。**本机电量恒定排除**：Windows 任务栏自己已经有一个电池图标，
-    /// 再在贴片上重复一遍只是噪音（与托盘"最低电量"不统计本机是同一个理由）。
+    /// 取要显示的设备。本机电池**跟随「监控本机电量」开关**：开了就显示（用户主动要盯），
+    /// 不开就排除（默认；Windows 任务栏已有电池图标，避免重复）。
+    /// 顺序：跟随 <see cref="App.Services.Manager.Devices"/>（= 用户手动排序），不再按电量重排。
     /// </summary>
     private static List<DeviceStatus> SelectDevices(out IReadOnlyList<string> overflowNames)
     {
         overflowNames = Array.Empty<string>();
+        bool includeSystem = App.Services.Settings.MonitorSystemBattery;
         var all = App.Services.Manager.Devices
-            .Where(d => d.IsOnline && d.Source != DeviceSource.System)
+            .Where(d => d.IsOnline && (includeSystem || d.Source != DeviceSource.System))
             .Select(d => DevicePresentation.Apply(d, App.Services.Settings))
-            .OrderBy(d => DeviceStatusFormatter.IsChargingOrFull(d.Charging))
-            .ThenBy(d => d.BatteryPercent ?? 999)
-            .ThenBy(d => d.DisplayName)
             .ToList();
 
         if (TaskbarBatteryMode.Normalize(App.Services.Settings.TaskbarBatteryMode) == TaskbarBatteryMode.Lowest)
-            return all.Count > 0 ? [all[0]] : [];
+        {
+            // 「仅最低电量」模式需要在用户排序结果里挑电量最低的那台
+            var lowest = all
+                .OrderBy(d => DeviceStatusFormatter.IsChargingOrFull(d.Charging))
+                .ThenBy(d => d.BatteryPercent ?? 999)
+                .ThenBy(d => d.DisplayName)
+                .FirstOrDefault();
+            return lowest != null ? [lowest] : [];
+        }
 
         int max = TaskbarBatteryOptions.Clamp(App.Services.Settings.TaskbarBatteryMaxDevices);
         if (all.Count <= max) return all;
@@ -470,6 +511,9 @@ public sealed class TaskbarPillWindow : IDisposable
     private void Upload(int x, int y)
     {
         if (_bitmap == null) return;
+        // 内容与位置都没变：这一拍不重复拷贝/提交
+        if (_renderSerial == _uploadedSerial && x == _uploadedPos.X && y == _uploadedPos.Y) return;
+
         EnsureDib(_pillW, _pillH);
         if (_dib == IntPtr.Zero) return;
 
@@ -487,6 +531,11 @@ public sealed class TaskbarPillWindow : IDisposable
         };
         if (!Native.UpdateLayeredWindow(_hwnd, IntPtr.Zero, ref dst, ref size, _memDc, ref src, 0, ref blend, Native.ULW_ALPHA))
             Log.Warn($"任务栏贴片：UpdateLayeredWindow 失败，err={Marshal.GetLastWin32Error()}");
+        else
+        {
+            _uploadedSerial = _renderSerial;
+            _uploadedPos = dst;
+        }
     }
 
     private void CopyToDib(Gdi.Bitmap bmp, int w, int h)
@@ -511,7 +560,8 @@ public sealed class TaskbarPillWindow : IDisposable
 
     private static IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
-        var self = _current;
+        TaskbarPillWindow? self;
+        lock (ByHwnd) ByHwnd.TryGetValue(hwnd, out self);
         if (self != null)
         {
             switch (msg)

@@ -12,6 +12,7 @@ internal static class Native
 
     public const int GWL_EXSTYLE = -20;
     public const int GWLP_WNDPROC = -4;
+    public const int GWLP_USERDATA = -21;
     public const int WS_EX_TOOLWINDOW = 0x80;
 
     /// <summary>点击不激活窗口：任务栏贴片必须带它，否则点一下就把焦点从用户正在用的程序抢走。</summary>
@@ -186,8 +187,23 @@ internal static class Native
     /// <summary>任务栏主窗口类名（主显示器那块；任务栏被拖到副屏时它也跟过去）。</summary>
     public const string TaskbarClassName = "Shell_TrayWnd";
 
+    /// <summary>副屏任务栏类名（每块副屏一个）。</summary>
+    public const string SecondaryTaskbarClassName = "Shell_SecondaryTrayWnd";
+
     /// <summary>任务栏内的通知区域（图标 + 时钟）类名，贴片就贴在它左边。</summary>
     public const string TrayNotifyClassName = "TrayNotifyWnd";
+
+    public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    /// <summary>枚举顶层窗口：用来找齐所有副屏任务栏（FindWindow 只能拿到第一个）。</summary>
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int GetClassNameW(IntPtr hwnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hwnd);
 
     // ---- 窗口圆角（仅 Win11）----
     // ⚠ Win10 **不要**用 SetWindowRgn 裁圆角：WinUI 3 的内容走 DirectComposition，SetWindowRgn
@@ -354,6 +370,28 @@ internal static class Native
         public RECT rcWork;
         public uint dwFlags;
     }
+
+    /// <summary>MONITORINFOEX：比 MONITORINFO 多一个 szDevice（"\\.\DISPLAY1"）。结构首 4 字段一致，可以互转。</summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MONITORINFOEX
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szDevice;
+    }
+
+    public const uint MONITORINFOF_PRIMARY = 0x1;
+
+    public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
+
+    /// <summary>枚举所有显示器：选屏下拉框与"任务栏属于哪块屏"都用它。</summary>
+    [DllImport("user32.dll")]
+    public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFOEX lpmi);
 
     [DllImport("user32.dll")]
     public static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT tme);

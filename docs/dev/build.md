@@ -99,7 +99,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 1. **packId 必须叫 `VigilWattApp`，不能叫 `VigilWatt`**。Velopack 默认装到 `%LocalAppData%\<packId>`，叫 VigilWatt 会和应用数据目录 `%LOCALAPPDATA%\VigilWatt`（settings.json/history.db/logs）撞车，升级时数据被清。脚本里有注释，改 packId 前想清楚。
 2. **vpk 不指定 `--runtime` 会默认 x86**（仅警告不报错）。脚本是 x64-only 应用，传了 `--runtime win-x64`；改打包方式时别丢。
 3. **同一个版本不能重复 pack**（FTL: release in channel win equal or greater）。重打同版本要先把 `dist/` 清空；
-   **发新版本时不要清空**——旧版本的 `*-full.nupkg` 是 delta 的基准，留着才会自动生成
+   **但发新版本时别清**——旧版本的 `*-full.nupkg` 是 delta 的基准，留着才会自动生成
    `新版本-delta.nupkg`（2026-10-12 实测：1.0.3 → 1.0.4 的 delta 只有 **97KB**，而全量包 36MB）。
    `RELEASES` / `releases.win.json` 会同时列出新旧包，客户端自动挑 delta。
 4. **PowerShell 5.1 的编码坑**：.ps1 含中文必须存成 **UTF-8 带 BOM**，否则中文注释被当 GBK 读、字符串终止符解析直接报错。改 build-installer.ps1 后确认 BOM 还在（VS Code 右下角选"通过编码保存 → UTF-8 with BOM"）。

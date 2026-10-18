@@ -1,5 +1,4 @@
 using VigilWatt.Core.Models;
-using VigilWatt.Core.Devices;
 using Gdi = System.Drawing;
 using Gdi2 = System.Drawing.Drawing2D;
 using GdiImaging = System.Drawing.Imaging;
@@ -10,19 +9,32 @@ namespace VigilWatt.App.Services;
 /// 功 能： 任务栏贴片的绘制：把"每台设备一格"画进一张 32 位预乘 ARGB 位图，交给原生分层窗口提交 （贴片是 <c>SetParent</c> 进任务栏的**原生子窗口**，用不了 XAML，原理见 runtime-pitfalls.md §16）。
 /// 2026/10/12 17:20:14 xliu
 /// **不画底色与边框**——贴片是浮在任务栏上的一行读数，加了底框就会糊出一个突兀的方块。
+/// 多设备时按两行均摊（少的那行水平居中），行高压到原来一半，详见 <see cref="Layout"/>。
 /// </summary>
 public static class TaskbarPillRenderer
 {
     /// <summary>贴片左右内边距（DIP）。</summary>
     public const double PadH = 6;
 
-    private const double IconBox = 15;
+    /// <summary>两行布局的分割阈值：1 台单行，≥2 台两行。</summary>
+    private const int TwoRowThreshold = 2;
+
+    private const double IconBox = 19;
     private const double IconTextGap = 4;
-    private const double BoltW = 7, BoltH = 11;
-    private const double DividerW = 1, DividerH = 14;
-    private const double PercentFontSize = 13;
+    private const double BoltW = 9, BoltH = 13;
+    private const double PercentFontSize = 15.5;
     private const double EmptyFontSize = 12;
     private const double EmptyTextWidthDip = 104;
+
+    /// <summary>两行模式下的尺寸：行高减半，图标与字号跟着缩，否则塞不下。</summary>
+    private const double RowIconBox = 14.5;
+    private const double RowPercentFontSize = 12.5;
+    private const double RowBoltW = 7, RowBoltH = 10.5;
+    private const double RowIconTextGap = 3;
+    /// <summary>同一行内相邻两格的间距。</summary>
+    private const double RowChipGap = 8;
+    /// <summary>两行之间的垂直间隙（越小越紧凑）。</summary>
+    private const double RowGapV = 0;
 
     /// <summary>宽度余量（像素）：字宽量出来差一两个像素就会把最右一格挤出窗口（历史事故）。</summary>
     private const int SlackPx = 8;
@@ -50,19 +62,24 @@ public static class TaskbarPillRenderer
     public const string OverflowHitId = ":overflow:";
 
     /// <summary>画一整条贴片，返回位图；<paramref name="widthPx"/> 是裁掉右侧空白后的实际宽度。</summary>
+    /// <param name="accentColors">设备 Id → 用户自定义颜色；命中则百分比/闪电用它，否则按电量状态色。</param>
     public static Gdi.Bitmap Render(
         IReadOnlyList<DeviceStatus> devices, IReadOnlyList<string> overflowNames,
-        IReadOnlyDictionary<string, RemainingTimeEstimateResult>? remainingTimeEstimates,
-        Skin skin, int heightPx, float scale, out int widthPx, out IReadOnlyList<HitChip> hits)
+        Skin skin, int heightPx, float scale, IReadOnlyDictionary<string, Gdi.Color>? accentColors,
+        out int widthPx, out IReadOnlyList<HitChip> hits)
     {
         using var percentFont = new Gdi.Font("Microsoft YaHei UI", (float)(PercentFontSize * scale), Gdi.FontStyle.Bold, Gdi.GraphicsUnit.Pixel);
+        using var rowFont = new Gdi.Font("Microsoft YaHei UI", (float)(RowPercentFontSize * scale), Gdi.FontStyle.Bold, Gdi.GraphicsUnit.Pixel);
         using var plainFont = new Gdi.Font("Microsoft YaHei UI", (float)(EmptyFontSize * scale), Gdi.FontStyle.Regular, Gdi.GraphicsUnit.Pixel);
         using var sf = (Gdi.StringFormat)Gdi.StringFormat.GenericTypographic.Clone();
         sf.FormatFlags |= Gdi.StringFormatFlags.NoWrap | Gdi.StringFormatFlags.MeasureTrailingSpaces;
         sf.LineAlignment = Gdi.StringAlignment.Center;
 
-        var pieces = BuildPieces(devices, overflowNames, scale, percentFont, plainFont, sf, out float contentW);
-        int width = (int)Math.Ceiling(contentW + PadH * 2 * scale) + SlackPx;
+        // 单行或两行：把所有格子的几何一次性算出来，绘制只按结果画，不再算尺寸
+        var chips = Layout(devices, overflowNames, heightPx, scale, percentFont, rowFont, plainFont, sf,
+            out float totalW, out var overflowChip);
+
+        int width = (int)Math.Ceiling(totalW + PadH * 2 * scale) + SlackPx;
         var bmp = new Gdi.Bitmap(width, heightPx, GdiImaging.PixelFormat.Format32bppPArgb);
 
         using (var g = Gdi.Graphics.FromImage(bmp))
@@ -72,154 +89,224 @@ public static class TaskbarPillRenderer
             g.Clear(Gdi.Color.Transparent);
             using (var hit = new Gdi.SolidBrush(Gdi.Color.FromArgb(1, 0, 0, 0)))
                 g.FillRectangle(hit, 0, 0, width, heightPx);
-            DrawPieces(g, pieces, skin, heightPx, scale, percentFont, plainFont, sf);
+
+            float padLeft = (float)(PadH * scale);
+            if (devices.Count == 0)
+            {
+                DrawText(g, "暂无在线设备", plainFont, Fade(skin.Text, 0.6f),
+                    new Gdi.RectangleF(padLeft, 0, (float)(EmptyTextWidthDip * scale), heightPx), sf);
+            }
+            else
+            {
+                var fontForChip = devices.Count >= TwoRowThreshold ? rowFont : percentFont;
+                foreach (var chip in chips)
+                    DrawChipAt(g, chip, skin, padLeft, scale, fontForChip, sf, AccentFor(chip.Device, accentColors, skin));
+                if (overflowChip != null)
+                {
+                    var ov = overflowChip.Value;
+                    DrawText(g, $"+{ov.Overflow}", fontForChip, Fade(skin.Text, 0.6f),
+                        new Gdi.RectangleF(padLeft + ov.X, ov.Y, ov.Width + 2, ov.Height), sf);
+                }
+            }
         }
 
         widthPx = Math.Min(width, ContentRight(bmp) + (int)Math.Ceiling(PadH * scale));
-        hits = BuildHits(pieces, scale, remainingTimeEstimates);
+        hits = BuildHits(chips, overflowChip, scale);
         return bmp;
     }
 
-    private enum PieceKind { Chip, Divider, Overflow, Empty }
+    /// <summary>一格设备的几何：客户区相对位置（不含左 pad）与要显示的设备。</summary>
+    private readonly record struct ChipGeometry(DeviceStatus Device, float X, float Y, float Width, float Height);
 
-    private readonly record struct Piece(PieceKind Kind, DeviceStatus? Device, int Overflow, string? OverflowTip, float X, float Width);
+    /// <summary>+N 折叠格的几何。</summary>
+    private readonly record struct OverflowGeometry(int Overflow, string Tip, float X, float Y, float Width, float Height);
 
-    private static List<Piece> BuildPieces(
-        IReadOnlyList<DeviceStatus> devices, IReadOnlyList<string> overflowNames, float scale,
-        Gdi.Font percentFont, Gdi.Font plainFont, Gdi.StringFormat sf, out float contentWidth)
+    /// <summary>
+    /// 把设备分配到行（1 台单行；≥2 台两行均摊，上行 ⌈n/2⌉，下行 ⌊n/2⌋ 居中），
+    /// 再算出每格的 X/Y/W/H。折叠格固定放在最后一行末尾。
+    /// </summary>
+    private static List<ChipGeometry> Layout(
+        IReadOnlyList<DeviceStatus> devices, IReadOnlyList<string> overflowNames,
+        int heightPx, float scale,
+        Gdi.Font singleFont, Gdi.Font rowFont, Gdi.Font plainFont, Gdi.StringFormat sf,
+        out float totalWidth, out OverflowGeometry? overflowChip)
     {
-        var pieces = new List<Piece>();
-        float x = 0;
-        int overflow = overflowNames.Count;
+        var chips = new List<ChipGeometry>();
+        overflowChip = null;
+        totalWidth = 0;
 
         if (devices.Count == 0)
         {
-            float w = (float)(EmptyTextWidthDip * scale);
-            pieces.Add(new Piece(PieceKind.Empty, null, 0, null, x, w));
-            x += w;
-        }
-        else
-        {
-            for (int i = 0; i < devices.Count; i++)
-            {
-                if (i > 0)
-                {
-                    x += (float)(IconTextGap * scale);
-                    pieces.Add(new Piece(PieceKind.Divider, null, 0, null, x, (float)(DividerW * scale)));
-                    x += (float)(DividerW * scale) + (float)(IconTextGap * scale);
-                }
-                float w = ChipWidth(devices[i], scale, percentFont, sf);
-                pieces.Add(new Piece(PieceKind.Chip, devices[i], 0, null, x, w));
-                x += w;
-            }
-            if (overflow > 0)
-            {
-                x += (float)(IconTextGap * scale);
-                pieces.Add(new Piece(PieceKind.Divider, null, 0, null, x, (float)(DividerW * scale)));
-                x += (float)(DividerW * scale) + (float)(IconTextGap * scale);
-                float w = Measure(MeasureG, $"+{overflow}", plainFont, sf);
-                string tip = string.Join("\n", overflowNames);
-                pieces.Add(new Piece(PieceKind.Overflow, null, overflow, tip, x, w));
-                x += w;
-            }
+            totalWidth = (float)(EmptyTextWidthDip * scale);
+            return chips;
         }
 
-        contentWidth = x;
-        return pieces;
+        bool twoRows = devices.Count >= TwoRowThreshold;
+
+        if (!twoRows)
+        {
+            // 单行：图标 + (闪电) + 百分比，与旧版一致
+            float x = 0;
+            foreach (var d in devices)
+            {
+                float w = SingleChipWidth(d, scale, singleFont, sf);
+                chips.Add(new ChipGeometry(d, x, 0, w, heightPx));
+                x += w;
+            }
+            totalWidth = x;
+            return chips;
+        }
+
+        // 两行：上行 ⌈n/2⌉，下行 ⌊n/2⌋；少的那行居中
+        int topCount = (devices.Count + 1) / 2;
+        int bottomCount = devices.Count - topCount;
+
+        float rowH = (heightPx - (float)(RowGapV * scale)) / 2f;
+        float topY = 0;
+        float bottomY = rowH + (float)(RowGapV * scale);
+
+        var topDevices = devices.Take(topCount).ToList();
+        var bottomDevices = devices.Skip(topCount).ToList();
+
+        // 折叠格加到下行末尾
+        float topW = RowWidth(topDevices, 0, scale, rowFont, plainFont, sf);
+        float bottomW = RowWidth(bottomDevices, overflowNames.Count, scale, rowFont, plainFont, sf);
+        totalWidth = Math.Max(topW, bottomW);
+
+        PlaceRow(topDevices, 0, topY, rowH, totalWidth, scale, rowFont, sf, chips, ref overflowChip, overflowNames);
+        PlaceRow(bottomDevices, overflowNames.Count, bottomY, rowH, totalWidth, scale, rowFont, sf, chips, ref overflowChip, overflowNames);
+
+        return chips;
     }
 
-    private static List<HitChip> BuildHits(List<Piece> pieces, float scale, IReadOnlyDictionary<string, RemainingTimeEstimateResult>? remainingTimeEstimates)
+    /// <summary>算一行总宽：格宽之和 + 格间距 + 可选折叠格宽度。</summary>
+    private static float RowWidth(IReadOnlyList<DeviceStatus> row, int overflow, float scale,
+        Gdi.Font rowFont, Gdi.Font plainFont, Gdi.StringFormat sf)
     {
-        float padLeft = (float)(PadH * scale);
-        var hits = new List<HitChip>();
-        foreach (var piece in pieces)
-        {
-            if (piece.Kind == PieceKind.Chip && piece.Device != null)
-            {
-                string tip = piece.Device.DisplayName;
-                if (remainingTimeEstimates != null && remainingTimeEstimates.TryGetValue(piece.Device.Id, out var remaining))
-                    tip += remaining.IsAvailable
-                        ? $"\n约{RemainingTimeEstimator.Format(remaining.Remaining!.Value)}剩余"
-                        : $"\n{remaining.Explain()}";
-                hits.Add(new HitChip(
-                    piece.Device.Id, tip,
-                    (int)Math.Floor(padLeft + piece.X), (int)Math.Ceiling(piece.Width)));
-            }
-            else if (piece.Kind == PieceKind.Overflow && !string.IsNullOrEmpty(piece.OverflowTip))
-            {
-                hits.Add(new HitChip(
-                    OverflowHitId, piece.OverflowTip,
-                    (int)Math.Floor(padLeft + piece.X), (int)Math.Ceiling(piece.Width)));
-            }
-        }
-        return hits;
+        if (row.Count == 0 && overflow == 0) return 0;
+        float w = 0;
+        foreach (var d in row)
+            w += RowChipWidth(d, scale, rowFont, sf);
+        if (overflow > 0)
+            w += Measure(MeasureG, $"+{overflow}", plainFont, sf);
+        if (row.Count + (overflow > 0 ? 1 : 0) > 1)
+            w += (float)(RowChipGap * scale) * (row.Count + (overflow > 0 ? 1 : 0) - 1);
+        return w;
     }
 
-    private static float ChipWidth(DeviceStatus d, float scale, Gdi.Font percentFont, Gdi.StringFormat sf)
+    /// <summary>把一行设备（+ 可选折叠格）按"整行居中"摆到 chips；少的那行因此居中显示。</summary>
+    private static void PlaceRow(
+        IReadOnlyList<DeviceStatus> row, int overflow, float y, float rowH, float totalW, float scale,
+        Gdi.Font rowFont, Gdi.StringFormat sf,
+        List<ChipGeometry> chips, ref OverflowGeometry? overflowChip, IReadOnlyList<string> overflowNames)
+    {
+        int slots = row.Count + (overflow > 0 ? 1 : 0);
+        if (slots == 0) return;
+
+        // 行内容宽（不含居中留白）
+        float contentW = 0;
+        foreach (var d in row)
+            contentW += RowChipWidth(d, scale, rowFont, sf);
+        if (overflow > 0)
+            contentW += Measure(MeasureG, $"+{overflow}", rowFont, sf);
+        contentW += (float)(RowChipGap * scale) * (slots - 1);
+
+        float x = (totalW - contentW) / 2f;   // 少的那行居中
+        float gap = (float)(RowChipGap * scale);
+
+        foreach (var d in row)
+        {
+            float w = RowChipWidth(d, scale, rowFont, sf);
+            chips.Add(new ChipGeometry(d, x, y, w, rowH));
+            x += w + gap;
+        }
+        if (overflow > 0)
+        {
+            float w = Measure(MeasureG, $"+{overflow}", rowFont, sf);
+            string tip = string.Join("\n", overflowNames);
+            overflowChip = new OverflowGeometry(overflow, tip, x, y, w, rowH);
+        }
+    }
+
+    /// <summary>单行模式的一格宽（与旧版相同：图标 + 闪电槽位 + 百分比）。</summary>
+    private static float SingleChipWidth(DeviceStatus d, float scale, Gdi.Font font, Gdi.StringFormat sf)
     {
         float w = (float)(IconBox * scale) + (float)(IconTextGap * scale);
-        if (DeviceStatusFormatter.IsCharging(d.Charging))
+        if (DeviceStatusFormatter.IsCharging(d.Charging) && d.Kind != DeviceKind.Computer)
             w += (float)(BoltW * scale) + (float)(IconTextGap * scale);
-        return w + Measure(MeasureG, PercentText(d), percentFont, sf);
+        return w + Measure(MeasureG, PercentText(d), font, sf);
     }
 
-    private static void DrawPieces(
-        Gdi.Graphics g, List<Piece> pieces, Skin skin, int heightPx, float scale,
-        Gdi.Font percentFont, Gdi.Font plainFont, Gdi.StringFormat sf)
+    /// <summary>两行模式的一格宽：图标 + 闪电槽位 + 百分比（全部按 RowXxx 尺寸）。</summary>
+    private static float RowChipWidth(DeviceStatus d, float scale, Gdi.Font font, Gdi.StringFormat sf)
     {
-        float padLeft = (float)(PadH * scale);
-
-        foreach (var piece in pieces)
-        {
-            float x = padLeft + piece.X;
-            switch (piece.Kind)
-            {
-                case PieceKind.Divider:
-                    using (var b = new Gdi.SolidBrush(skin.Divider))
-                        g.FillRectangle(b, x, (heightPx - (float)(DividerH * scale)) / 2f, (float)(DividerW * scale), (float)(DividerH * scale));
-                    break;
-
-                case PieceKind.Empty:
-                    DrawText(g, "暂无在线设备", plainFont, Fade(skin.Text, 0.6f), new Gdi.RectangleF(x, 0, piece.Width, heightPx), sf);
-                    break;
-
-                case PieceKind.Overflow:
-                    DrawText(g, $"+{piece.Overflow}", percentFont, Fade(skin.Text, 0.6f), new Gdi.RectangleF(x, 0, piece.Width + 2, heightPx), sf);
-                    break;
-
-                case PieceKind.Chip:
-                    DrawChip(g, piece.Device!, skin, x, heightPx, scale, percentFont, sf);
-                    break;
-            }
-        }
+        float w = (float)(RowIconBox * scale) + (float)(RowIconTextGap * scale);
+        if (DeviceStatusFormatter.IsCharging(d.Charging) && d.Kind != DeviceKind.Computer)
+            w += (float)(RowBoltW * scale) + (float)(RowIconTextGap * scale);
+        return w + Measure(MeasureG, PercentText(d), font, sf);
     }
 
-    private static void DrawChip(
-        Gdi.Graphics g, DeviceStatus d, Skin skin, float x, int heightPx, float scale,
-        Gdi.Font percentFont, Gdi.StringFormat sf)
+    /// <summary>一格的前景色：自定义色优先；否则低电（≤20%）红、其余用主题前景（黑/白），与设备页保持一致。</summary>
+    private static Gdi.Color AccentFor(DeviceStatus d, IReadOnlyDictionary<string, Gdi.Color>? accentColors, Skin skin)
     {
+        if (accentColors != null && accentColors.TryGetValue(d.Id, out var custom)) return custom;
+        return d.BatteryPercent is <= 20 ? UiPalette.ToDrawing(UiPalette.Low) : skin.Text;
+    }
+
+    /// <summary>按已算好的几何画一格：图标 +(闪电)+ 百分比。行内布局由 Layout 决定，这里只画。</summary>
+    private static void DrawChipAt(
+        Gdi.Graphics g, ChipGeometry chip, Skin skin, float padLeft, float scale,
+        Gdi.Font font, Gdi.StringFormat sf, Gdi.Color state)
+    {
+        var d = chip.Device;
         var charging = DeviceStatusFormatter.IsCharging(d.Charging);
-        var state = UiPalette.ToDrawing(UiPalette.BatteryLevel(d.BatteryPercent, charging));
 
-        float iconBox = (float)(IconBox * scale);
-        DeviceIconFactory.DrawGlyph(g, d.Kind, skin.IconStroke, new Gdi.RectangleF(x, (heightPx - iconBox) / 2f, iconBox, iconBox), scale);
-        x += iconBox + (float)(IconTextGap * scale);
+        // 单行用 IconBox/BoltW；两行用 RowIconBox/RowBoltW。判断依据是格子高度（行高必然小于总高）。
+        bool compact = chip.Height < (float)(IconBox * scale) * 1.5f;
+        double iconBoxDip = compact ? RowIconBox : IconBox;
+        double boltWDip = compact ? RowBoltW : BoltW;
+        double boltHDip = compact ? RowBoltH : BoltH;
+        double iconTextGapDip = compact ? RowIconTextGap : IconTextGap;
 
-        if (charging)
+        float iconBox = (float)(iconBoxDip * scale);
+        float x = padLeft + chip.X;
+        float iconY = chip.Y + (chip.Height - iconBox) / 2f;
+        var iconRect = new Gdi.RectangleF(x, iconY, iconBox, iconBox);
+        DeviceIconFactory.DrawGlyph(g, d.Kind, skin.IconStroke, iconRect, scale);
+
+        bool boltOnIcon = charging && d.Kind == DeviceKind.Computer;
+        if (boltOnIcon)
+            DrawBoltCenteredOnScreen(g, state, iconRect, scale, (float)boltWDip, (float)boltHDip, compact);
+
+        x += iconBox + (float)(iconTextGapDip * scale);
+
+        if (charging && !boltOnIcon)
         {
-            DrawBolt(g, state, x, heightPx, scale);
-            x += (float)(BoltW * scale) + (float)(IconTextGap * scale);
+            float bw = (float)(boltWDip * scale), bh = (float)(boltHDip * scale);
+            float boltTop = chip.Y + (chip.Height - bh) / 2f;
+            DrawBolt(g, state, x, boltTop, bw, bh);
+            x += bw + (float)(iconTextGapDip * scale);
         }
 
         var text = PercentText(d);
-        DrawText(g, text, percentFont, state, new Gdi.RectangleF(x, 0, Measure(g, text, percentFont, sf) + 2, heightPx), sf);
+        DrawText(g, text, font, state, new Gdi.RectangleF(x, chip.Y, Measure(g, text, font, sf) + 2, chip.Height), sf);
     }
 
-    /// <summary>充电闪电：**自绘多边形而不是画 "⚡" 字符**——字体缺字形时会渲染成方块（runtime-pitfalls.md §5.3）。</summary>
-    private static void DrawBolt(Gdi.Graphics g, Gdi.Color color, float x, int heightPx, float scale)
+    /// <summary>把闪电画到电脑图标的"屏幕"区域中心：屏幕是 iconBox 顶部一块（14×9.5 名义），不是整个 iconBox。</summary>
+    private static void DrawBoltCenteredOnScreen(
+        Gdi.Graphics g, Gdi.Color color, Gdi.RectangleF iconBox, float scale,
+        float boltWDip, float boltHDip, bool compact)
     {
-        float w = (float)(BoltW * scale), h = (float)(BoltH * scale);
-        float top = (heightPx - h) / 2f;
+        // 与 DeviceIconFactory.NominalSize(Computer)=(14,11)、屏幕高 9.5 对齐；两行模式下图形按比例缩
+        float nominal = compact ? (float)(RowIconBox / IconBox) : 1f;   // iconBox 缩比 = 图形缩比
+        float screenW = 14f * scale * nominal, screenH = 9.5f * scale * nominal;
+        float glyphH = 11f * scale * nominal;
+        float screenX = iconBox.X + (iconBox.Width - screenW) / 2f;
+        float screenY = iconBox.Y + (iconBox.Height - glyphH) / 2f;
+
+        float w = boltWDip * scale, h = boltHDip * scale;
+        float x = screenX + (screenW - w) / 2f;
+        float top = screenY + (screenH - h) / 2f;
         using var path = new Gdi2.GraphicsPath();
         path.AddPolygon(
         [
@@ -232,6 +319,43 @@ public static class TaskbarPillRenderer
         ]);
         using var brush = new Gdi.SolidBrush(color);
         g.FillPath(brush, path);
+    }
+
+    /// <summary>充电闪电：**自绘多边形而不是画 "⚡" 字符**——字体缺字形时会渲染成方块（runtime-pitfalls.md §5.3）。</summary>
+    private static void DrawBolt(Gdi.Graphics g, Gdi.Color color, float x, float top, float w, float h)
+    {
+        using var path = new Gdi2.GraphicsPath();
+        path.AddPolygon(
+        [
+            new Gdi.PointF(x + w * 0.58f, top),
+            new Gdi.PointF(x, top + h * 0.56f),
+            new Gdi.PointF(x + w * 0.42f, top + h * 0.56f),
+            new Gdi.PointF(x + w * 0.30f, top + h),
+            new Gdi.PointF(x + w, top + h * 0.42f),
+            new Gdi.PointF(x + w * 0.54f, top + h * 0.42f),
+        ]);
+        using var brush = new Gdi.SolidBrush(color);
+        g.FillPath(brush, path);
+    }
+
+    private static List<HitChip> BuildHits(
+        List<ChipGeometry> chips, OverflowGeometry? overflowChip, float scale)
+    {
+        float padLeft = (float)(PadH * scale);
+        var hits = new List<HitChip>();
+        foreach (var c in chips)
+        {
+            hits.Add(new HitChip(
+                c.Device.Id, c.Device.DisplayName,
+                (int)Math.Floor(padLeft + c.X), (int)Math.Ceiling(c.Width)));
+        }
+        if (overflowChip is { } ov && !string.IsNullOrEmpty(ov.Tip))
+        {
+            hits.Add(new HitChip(
+                OverflowHitId, ov.Tip,
+                (int)Math.Floor(padLeft + ov.X), (int)Math.Ceiling(ov.Width)));
+        }
+        return hits;
     }
 
     private static void DrawText(Gdi.Graphics g, string text, Gdi.Font font, Gdi.Color color, Gdi.RectangleF rect, Gdi.StringFormat sf)

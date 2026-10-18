@@ -58,6 +58,8 @@ public sealed partial class SettingsPage : Page
         foreach (var (value, label) in LogLevelOptions.Choices)
             LogLevelCombo.Items.Add(new ComboBoxItem { Content = label, Tag = value });
 
+        RebuildMonitorOptions();
+
         // 插件开关动态生成：新插件（IBatteryPlugin 实现）自动出现在设置页
         bool first = true;
         foreach (var plugin in App.Services.Manager.Plugins)
@@ -67,12 +69,32 @@ public sealed partial class SettingsPage : Page
         }
     }
 
+    /// <summary>重建屏幕下拉框：拔插显示器后内容要变，每次进设置页都刷一遍（条目少，重建开销可忽略）。</summary>
+    private void RebuildMonitorOptions()
+    {
+        TaskbarMonitorCombo.Items.Clear();
+        // 空 Tag = 主屏（默认值，保持与 AppSettings.TaskbarBatteryMonitorDevice 的空语义一致）
+        TaskbarMonitorCombo.Items.Add(new ComboBoxItem { Content = "主屏（默认）", Tag = "" });
+        int idx = 1;
+        foreach (var m in MonitorCatalog.All())
+        {
+            if (m.IsPrimary) continue;
+            TaskbarMonitorCombo.Items.Add(new ComboBoxItem
+            {
+                Content = $"副屏 {idx}（{m.Bounds.Width}×{m.Bounds.Height}）",
+                Tag = m.DeviceName,
+            });
+            idx++;
+        }
+    }
+
     /// <summary>每次进入页面都重读：设置可能被别处改过（例如插件开关在保存时落盘）。</summary>
     private void SyncFromSettings()
     {
+        RebuildMonitorOptions();   // 每次进页面刷一遍屏幕列表，拔插显示器后能看到最新
+
         var s = App.Services.Settings;
         ThresholdBox.Value = s.LowBatteryThreshold;
-        RemainingTimeEstimateToggle.IsOn = s.RemainingTimeEstimateEnabled;
         SampleBox.Value = s.SampleIntervalMinutes;
         RetentionBox.Value = s.HistoryRetentionDays;
         StartMinimizedToggle.IsOn = s.StartMinimized;
@@ -92,6 +114,9 @@ public sealed partial class SettingsPage : Page
         SelectByTag(TaskbarModeCombo, taskbarMode);
         TaskbarModeHintText.Text = TaskbarBatteryMode.Describe(taskbarMode);
         SelectByTag(TaskbarMaxCombo, TaskbarBatteryOptions.Clamp(s.TaskbarBatteryMaxDevices));
+        // 选屏：配置里的设备名在当前屏列表里找不到（屏被拔了）时回落"主屏"，避免选中态消失
+        SelectByTag(TaskbarMonitorCombo,
+            MonitorCatalog.FindByDevice(s.TaskbarBatteryMonitorDevice) is { } m ? m.DeviceName : "");
 
         // 窗口背景：下拉框选中"用户偏好"，副标题说"这台机器上实际会生效什么"——
         // 两者不是一回事（Win10 上选 Mica 会静默降级成 Acrylic），分开显示才不会让人困惑。
@@ -413,7 +438,6 @@ public sealed partial class SettingsPage : Page
     {
         var s = App.Services.Settings;
         s.LowBatteryThreshold = (int)ThresholdBox.Value;
-        s.RemainingTimeEstimateEnabled = RemainingTimeEstimateToggle.IsOn;
         s.SampleIntervalMinutes = (int)SampleBox.Value;
         s.HistoryRetentionDays = (int)RetentionBox.Value;
         s.StartMinimized = StartMinimizedToggle.IsOn;
@@ -433,6 +457,8 @@ public sealed partial class SettingsPage : Page
                                      && taskbarMaxItem.Tag is int taskbarMaxValue
             ? TaskbarBatteryOptions.Clamp(taskbarMaxValue)
             : TaskbarBatteryOptions.Default;
+        // 选屏：Tag 即设备名；主屏项 Tag 是空串，与默认语义一致
+        s.TaskbarBatteryMonitorDevice = (TaskbarMonitorCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
         s.WindowBackdrop = (BackdropCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? WindowBackdrop.Auto;
         s.LogLevel = LogLevelNames.Normalize((LogLevelCombo.SelectedItem as ComboBoxItem)?.Tag as string);
         s.LogRetentionDays = (int)LogRetentionBox.Value;
@@ -466,7 +492,7 @@ public sealed partial class SettingsPage : Page
         // 任务栏贴片开关即时生效（与小组件同一条路）
         if (s.TaskbarBatteryEnabled && App.Services.TaskbarBattery == null)
         {
-            App.Services.TaskbarBattery = new TaskbarPillWindow();
+            App.Services.TaskbarBattery = new TaskbarPillManager();
         }
         else if (!s.TaskbarBatteryEnabled && App.Services.TaskbarBattery != null)
         {

@@ -89,7 +89,7 @@ public class HistoryStore : IDisposable
             cmd.Parameters.AddWithValue("$name", device.DisplayName);
             cmd.Parameters.AddWithValue("$kind", (int)device.Kind);
             cmd.Parameters.AddWithValue("$p", percent);
-            cmd.Parameters.AddWithValue("$c", DeviceStatusFormatter.IsChargingOrFull(device.Charging) ? 1 : 0);
+            cmd.Parameters.AddWithValue("$c", device.Charging == ChargingState.Charging ? 1 : 0);
             cmd.Parameters.AddWithValue("$ts", device.LastUpdated.ToUnixTimeMilliseconds());
             cmd.ExecuteNonQuery();
         }

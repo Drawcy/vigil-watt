@@ -16,11 +16,15 @@ public sealed partial class HistoryPage : Page
 {
     private List<HistoryDeviceRow> _rows = new();
 
+    /// <summary>上次渲染指纹：窗口隐藏再显示会重跑 Loaded，数据没变就别重建列表（还会重置勾选状态）。</summary>
+    private string? _rowsKey;
+
     public HistoryPage()
     {
         InitializeComponent();
-        NavigationCacheMode = NavigationCacheMode.Required;
-        // 页面被缓存复用、构造函数只跑一次，重查必须挂到 Loaded 上（本页不订阅设备事件）
+        // 离开即释放整棵视觉树：本页数据量大、重建代价可接受，常驻省下的内存更值
+        NavigationCacheMode = NavigationCacheMode.Disabled;
+        // 查询挂 Loaded：每次进入页面都会重新查一次（本页不订阅设备事件）
         Loaded += (_, _) => _ = ReloadAsync();
     }
 
@@ -54,11 +58,19 @@ public sealed partial class HistoryPage : Page
                 KpiEarliestSub.Text = "—";
             }
 
-            _rows = devices.Select(d => HistoryDeviceRow.From(d with
+            var newRows = devices.Select(d => HistoryDeviceRow.From(d with
             {
                 Name = DevicePresentation.DisplayName(d.DeviceId, d.Name, App.Services.Settings),
             })).ToList();
-            DeviceList.ItemsSource = _rows;
+            string key = string.Join(";", newRows.Select(r =>
+                $"{r.DeviceId}|{r.Name}|{r.Count}|{r.First.UtcTicks}|{r.Last.UtcTicks}"));
+            // 内容没变就保留旧 _rows（连同勾选状态），不重绑 ItemsSource
+            if (key != _rowsKey)
+            {
+                _rowsKey = key;
+                _rows = newRows;
+                DeviceList.ItemsSource = _rows;
+            }
 
             bool empty = _rows.Count == 0;
             DeviceList.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;

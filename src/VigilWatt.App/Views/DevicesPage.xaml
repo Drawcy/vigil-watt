@@ -37,11 +37,12 @@
                             Padding="16,12"
                             Margin="0,0,0,8"
                             RightTapped="DeviceRow_RightTapped">
-                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+                        <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="14">
                             <FontIcon Grid.Column="0" FontSize="22" Glyph="{x:Bind IconGlyph}" />
                             <StackPanel Grid.Column="1" Spacing="6">
                                 <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                                     <TextBlock Text="{x:Bind Name}" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{x:Bind NameBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                     <Border Grid.Column="1" CornerRadius="4" Padding="6,2" VerticalAlignment="Center"
                                             Background="{x:Bind SourceBackgroundBrush}">
@@ -60,6 +61,29 @@
                             <TextBlock Grid.Column="2" Text="{x:Bind PercentText}" FontSize="26"
                                        FontWeight="Bold" VerticalAlignment="Center"
                                        Foreground="{x:Bind PercentBrush}" />
+                            <!-- 手动排序：仅在线设备显示；顺序影响设备页/小组件/任务栏贴片 -->
+                            <StackPanel Grid.Column="3" Orientation="Vertical" Spacing="2"
+                                        VerticalAlignment="Center"
+                                        Visibility="{x:Bind IsOnline}">
+                                <Button Padding="4,0" MinWidth="0" MinHeight="0" Background="Transparent"
+                                        BorderThickness="0" Tag="{x:Bind Id}"
+                                        Click="MoveUp_Click" ToolTipService.ToolTip="上移">
+                                    <FontIcon Glyph="&#xE70E;" FontSize="12" />
+                                </Button>
+                                <Button Padding="4,0" MinWidth="0" MinHeight="0" Background="Transparent"
+                                        BorderThickness="0" Tag="{x:Bind Id}"
+                                        Click="MoveDown_Click" ToolTipService.ToolTip="下移">
+                                    <FontIcon Glyph="&#xE70D;" FontSize="12" />
+                                </Button>
+                            </StackPanel>
+                            <!-- 离线设备可删除：移除列表条目 + 自定义颜色/名称/图标 + 排序记录；再次上线按新设备处理 -->
+                            <Button Grid.Column="3" Padding="6" MinWidth="0" MinHeight="0"
+                                    Background="Transparent" BorderThickness="0" Tag="{x:Bind Id}"
+                                    VerticalAlignment="Center"
+                                    Visibility="{x:Bind IsOffline}"
+                                    Click="DeleteDevice_Click" ToolTipService.ToolTip="删除此设备（仅离线）">
+                                <FontIcon Glyph="&#xE74D;" FontSize="15" />
+                            </Button>
                         </Grid>
                     </Border>
                 </DataTemplate>

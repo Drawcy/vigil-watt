@@ -59,16 +59,6 @@
                 <TextBlock Text="可选的本机电量" Style="{StaticResource CapTextStyle}" />
             </StackPanel>
 
-            <Border Style="{StaticResource CardStyle}" Margin="0,20,0,0">
-                <StackPanel Spacing="8" Padding="0,12">
-                    <TextBlock Text="功能简介" Style="{StaticResource RowTitleStyle}" FontWeight="SemiBold" />
-                    <TextBlock Text="剩余时间估算：根据设备近期电量变化估算可用时间；采样不足或近期电量没有下降时，会提示当前原因。"
-                               Style="{StaticResource RowDescStyle}" />
-                    <TextBlock Text="右键重命名：在设备列表中右键设备，可设置更容易识别的自定义名称。"
-                               Style="{StaticResource RowDescStyle}" />
-                </StackPanel>
-            </Border>
-
             <!-- 软件更新 -->
             <Border Style="{StaticResource CardStyle}" Margin="0,28,0,0">
                 <StackPanel>
@@ -77,7 +67,7 @@
                             <StackPanel Spacing="2">
                                 <TextBlock x:Name="UpdateStatusText" Style="{StaticResource RowTitleStyle}"
                                            FontWeight="SemiBold" />
-                                <TextBlock Text="启动时自动检查 GitHub Release，连不上再回退 Gitee；发现新版本后会先征求确认"
+                                <TextBlock Text="GitHub Release 优先，连不上回退 Gitee；处理方式见下方「更新方式」"
                                            Style="{StaticResource RowDescStyle}" />
                             </StackPanel>
                             <ProgressBar x:Name="UpdateProgressBar" Height="6" Minimum="0" Maximum="100"
@@ -91,6 +81,17 @@
                                 <TextBlock Text="检查更新" />
                             </StackPanel>
                         </Button>
+                    </Grid>
+                    <Border Style="{StaticResource RowDividerStyle}" />
+                    <!-- 更新方式：三档（自动更新 / 仅通知 / 禁用更新），手动按钮不受"禁用"限制 -->
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" Padding="0,12">
+                        <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="更新方式" Style="{StaticResource RowTitleStyle}" />
+                            <TextBlock x:Name="UpdateModeHintText" Style="{StaticResource RowDescStyle}" />
+                        </StackPanel>
+                        <ComboBox Grid.Column="1" x:Name="UpdateModeCombo" Width="180"
+                                  VerticalAlignment="Center"
+                                  SelectionChanged="UpdateMode_Changed" />
                     </Grid>
                 </StackPanel>
             </Border>

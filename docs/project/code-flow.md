@@ -224,7 +224,6 @@ Upsert(incoming):
 
 SafeSample（每 SampleIntervalMinutes 分钟）:
   foreach 在线且有电量的设备 → history.Insert     # 无变化也写点，保证曲线连续
-  → 更新最近 90 天放电估算及不可用原因，变化时推送 UI；列表与任务栏悬停共用结果
 ```
 
 ### 5.1 离线占位（墓碑，`DeviceManager.RestoreOfflineTombstones`）
@@ -259,9 +258,7 @@ Initialize：RegisterClassW 建隐藏消息窗口（类名带 GUID）→ Shell_N
 
 ## 9. 设置流（SettingsPage.Save）
 
-收集 UI 值 → AppSettings.Save()（settings.json）→ 按改动项生效：AutostartService 写/删 HKCU Run 键、小组件开/关、Manager.ApplySettings()（重建定时器 + 同步本机电量开关 + 刷新展示）、CleanupHistoryNow()（按保留天数清理）。
-
-剩余时间估算按设备从历史库读取最近 90 天样本，充电或满电样本会重置放电区间；仅在线、未充电且未满电时展示。至少需要 3 个不同时间点和可测到的净下降（≥1 点），不再设最短观察时长或固定下降门槛；列表和任务栏悬停共用缓存结果。设置 `RemainingTimeEstimateEnabled` 默认开启。
+收集 UI 值 → AppSettings.Save()（settings.json）→ 按改动项生效：AutostartService 写/删 HKCU Run 键、小组件开/关、Manager.ApplySettings()（重建定时器 + 同步本机电量开关）、CleanupHistoryNow()（按保留天数清理）。
 
 ## 10. 退出流
 

@@ -34,12 +34,12 @@ public sealed partial class StatsPage : Page
     public StatsPage()
     {
         InitializeComponent();
-        NavigationCacheMode = NavigationCacheMode.Required;
+        NavigationCacheMode = NavigationCacheMode.Disabled;
         Loaded += OnPageLoaded;
         Unloaded += OnPageUnloaded;
     }
 
-    // 页面被缓存复用、构造函数只跑一次：订阅与刷新必须跟着 Loaded/Unloaded 走（同 DevicesPage）
+    // 订阅与刷新跟着 Loaded/Unloaded 走：本页不再常驻，离开时解绑、回来时重新订阅
     private void OnPageLoaded(object sender, RoutedEventArgs e)
     {
         if (!_hooked)

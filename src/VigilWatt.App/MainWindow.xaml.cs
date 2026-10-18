@@ -51,26 +51,6 @@ public sealed partial class MainWindow : Window
 
         // 初次进入设备页
         ContentFrame.Navigate(typeof(DevicesPage));
-        PrewarmSettingsPage();
-    }
-
-    /// <summary>
-    /// 预热设置页：XBF 解析与控件构造是一次性开销，先在窗口可见前付掉，首次点设置就不用等。
-    /// </summary>
-    private void PrewarmSettingsPage()
-    {
-        try
-        {
-            ContentFrame.Navigate(typeof(SettingsPage));
-            ContentFrame.Navigate(typeof(DevicesPage));
-            ContentFrame.BackStack.Clear();
-        }
-        catch (Exception ex)
-        {
-            // 预热失败不该拖垮启动；退回设备页即可，设置页之后照常按需构造
-            Log.Warn($"设置页预热失败，回退设备页: {ex.Message}");
-            try { ContentFrame.Navigate(typeof(DevicesPage)); } catch { /* 已尽力 */ }
-        }
     }
 
         /// <summary>

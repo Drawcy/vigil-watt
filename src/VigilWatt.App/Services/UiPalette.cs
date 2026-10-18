@@ -47,6 +47,34 @@ public static class UiPalette
         FromRgb(0xFF, 0x9F, 0x0A),
     ];
 
+    /// <summary>
+    /// 设备自定义颜色的 16 色预设。选色对话框按 4×4 展示；
+    /// 色相覆盖红/橙/黄/绿/青/蓝/紫/粉，明暗主题下都清晰可辨。
+    /// </summary>
+    public static readonly Color[] CustomColorChoices =
+    [
+        FromRgb(0x0A, 0x84, 0xFF), FromRgb(0x32, 0xAD, 0xE6), FromRgb(0x5E, 0xCE, 0xF1), FromRgb(0x30, 0xB0, 0xC7),
+        FromRgb(0x34, 0xC7, 0x59), FromRgb(0xA3, 0xE6, 0x35), FromRgb(0xFF, 0xD6, 0x0A), FromRgb(0xFF, 0x9F, 0x0A),
+        FromRgb(0xFF, 0x6B, 0x3D), FromRgb(0xE2, 0x44, 0x5C), FromRgb(0xFF, 0x2D, 0x55), FromRgb(0xBF, 0x5A, 0xF2),
+        FromRgb(0xAF, 0x52, 0xDE), FromRgb(0x58, 0x56, 0xD6), FromRgb(0xA2, 0x84, 0x5E), FromRgb(0x8E, 0x8E, 0x93),
+    ];
+
+    /// <summary>把 <c>#RRGGBB</c> 解析成颜色；空值/格式不对返回 null（配置被手改坏时按"未设置"处理）。</summary>
+    public static Color? TryParseHex(string? hex)
+    {
+        if (string.IsNullOrWhiteSpace(hex)) return null;
+        var s = hex.Trim().TrimStart('#');
+        if (s.Length != 6) return null;
+        if (!byte.TryParse(s[..2], System.Globalization.NumberStyles.HexNumber, null, out var r)
+            || !byte.TryParse(s[2..4], System.Globalization.NumberStyles.HexNumber, null, out var g)
+            || !byte.TryParse(s[4..], System.Globalization.NumberStyles.HexNumber, null, out var b))
+            return null;
+        return Color.FromArgb(255, r, g, b);
+    }
+
+    /// <summary>颜色 → <c>#RRGGBB</c>（落盘用）。</summary>
+    public static string ToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
     /// <summary>电量状态 → 状态色。离线（IsOnline=false）由调用方直接用 Offline。</summary>
     public static Color BatteryLevel(int? percent, bool charging)
     {

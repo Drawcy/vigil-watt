@@ -25,7 +25,6 @@ public sealed class DeviceManager : IDisposable
     private readonly List<IBatteryPlugin> _plugins;
     private readonly DeviceClaimRegistry _claims = new();
     private readonly ConcurrentDictionary<string, DeviceStatus> _devices = new();
-    private readonly ConcurrentDictionary<string, RemainingTimeEstimateResult> _remainingTimeEstimates = new();
 
     /// <summary>每台设备"是否已就低电量提醒过"。电量回到阈值之上（或充电）就复位，下次跌破再提醒一次；
     /// 设备条目被移除时也一并清掉（见 <see cref="ExpireTombstones"/> / <see cref="DropDevicesOf"/>，CR-23）。</summary>
@@ -36,6 +35,7 @@ public sealed class DeviceManager : IDisposable
     private System.Threading.Timer? _sampleTimer;
     private System.Threading.Timer? _discoveryTimer;
     private System.Threading.Timer? _cleanupTimer;
+    private System.Threading.Timer? _systemBatteryTimer;
     private readonly object _pollSync = new();
     /// <summary>所有 pass（整轮轮询 / 快速发现）串行执行——插件内部的字典不是线程安全的。</summary>
     private readonly SemaphoreSlim _passGate = new(1, 1);
@@ -94,29 +94,64 @@ public sealed class DeviceManager : IDisposable
         return list;
     }
 
-    public IReadOnlyCollection<DeviceStatus> Devices => _devices.Values
-        .OrderByDescending(d => d.IsOnline).ThenBy(d => d.DisplayName).ToList();
+    /// <summary>设备列表：按用户手动排序（<see cref="AppSettings.DeviceOrder"/>）；未排序的新设备垫底，按显示名字典序稳定。</summary>
+    public IReadOnlyCollection<DeviceStatus> Devices
+    {
+        get
+        {
+            var order = _settings.DeviceOrder;
+            var rank = new Dictionary<string, int>(order.Count);
+            for (int i = 0; i < order.Count; i++) rank[order[i]] = i;
+            return _devices.Values
+                .OrderByDescending(d => d.IsOnline)
+                .ThenBy(d => rank.TryGetValue(d.Id, out var r) ? r : int.MaxValue)
+                .ThenBy(d => d.DisplayName)
+                .ToList();
+        }
+    }
+
+    /// <summary>把设备在 <see cref="AppSettings.DeviceOrder"/> 里上移/下移一位并落盘；调用方负责触发 UI 刷新。</summary>
+    public void MoveInOrder(string deviceId, int delta)
+    {
+        var order = _settings.DeviceOrder;
+        int cur = order.IndexOf(deviceId);
+        if (cur < 0)
+        {
+            // 还没进过排序表：先补到末尾再移动
+            order.Add(deviceId);
+            cur = order.Count - 1;
+        }
+        int target = Math.Clamp(cur + delta, 0, order.Count - 1);
+        if (target == cur) return;
+        order.RemoveAt(cur);
+        order.Insert(target, deviceId);
+        _settings.Save();
+    }
+
+    /// <summary>
+    /// 删除一台**已离线**的设备：从列表移除，并清掉自定义名称/图标/颜色与排序；
+    /// 同时记入 <see cref="AppSettings.HiddenDeviceIds"/>，阻止重启后从历史记录复活。
+    /// 设备再次上线时按新设备处理（详见 <see cref="Upsert"/>）。
+    /// </summary>
+    public bool RemoveOfflineDevice(string id)
+    {
+        if (!_devices.TryGetValue(id, out var device) || device.IsOnline) return false;
+
+        _devices.TryRemove(id, out _);
+        _tombstoneIds.Remove(id);
+        _lowBatteryNotified.TryRemove(id, out _);
+
+        _settings.DeviceOrder.Remove(id);
+        _settings.DeviceCustomizations.Remove(id);
+        if (!_settings.HiddenDeviceIds.Contains(id)) _settings.HiddenDeviceIds.Add(id);
+        _settings.Save();
+
+        Log.Info($"已删除离线设备: {id}");
+        DevicesChanged?.Invoke();
+        return true;
+    }
 
     public DeviceStatus? Find(string id) => _devices.TryGetValue(id, out var d) ? d : null;
-
-    public RemainingTimeEstimateResult GetRemainingTimeEstimate(DeviceStatus device)
-    {
-        if (!_settings.RemainingTimeEstimateEnabled)
-            return new(null, RemainingTimeUnavailableReason.Disabled);
-        if (!device.IsOnline)
-            return new(null, RemainingTimeUnavailableReason.Offline);
-        if (device.Charging == ChargingState.Charging)
-            return new(null, RemainingTimeUnavailableReason.Charging);
-        if (device.Charging == ChargingState.Full || device.BatteryPercent >= 100)
-            return new(null, RemainingTimeUnavailableReason.Full);
-        if (!device.BatteryPercent.HasValue)
-            return new(null, RemainingTimeUnavailableReason.MissingReading);
-        if (device.BatteryPercent is <= 0 or > 100)
-            return new(null, RemainingTimeUnavailableReason.InvalidReading);
-        return _remainingTimeEstimates.TryGetValue(device.Id, out var result)
-            ? result
-            : new(null, RemainingTimeUnavailableReason.CollectingSamples);
-    }
 
     public void RefreshPresentation()
     {
@@ -148,6 +183,9 @@ public sealed class DeviceManager : IDisposable
             {
                 if (stat.Last < cutoff) continue;
                 if (_devices.ContainsKey(stat.DeviceId)) continue;
+
+                // 用户手动删除过的设备：不要靠历史记录把它复活（回来后按新设备处理）
+                if (_settings.HiddenDeviceIds.Contains(stat.DeviceId)) continue;
 
                 // 用户主动关掉的品牌插件，不要靠历史记录把它"复活"成离线条目——
                 // 那会让"关了开关却还显示"的老问题换个形式回来。
@@ -210,7 +248,6 @@ public sealed class DeviceManager : IDisposable
         foreach (var id in expired)
         {
             _devices.TryRemove(id, out _);
-            _remainingTimeEstimates.TryRemove(id, out _);
             _tombstoneIds.Remove(id);
             _lowBatteryNotified.TryRemove(id, out _);
         }
@@ -223,6 +260,7 @@ public sealed class DeviceManager : IDisposable
         _pollTimer?.Dispose();
         _sampleTimer?.Dispose();
         _discoveryTimer?.Dispose();
+        _systemBatteryTimer?.Dispose();
         // 首扫尽快跑（探测已是并行/短路，不再需要 2 秒缓冲）
         _pollTimer = new Timer(_ => _ = RequestPollAsync(), null,
             TimeSpan.FromMilliseconds(300), TimeSpan.FromMinutes(1));
@@ -231,6 +269,11 @@ public sealed class DeviceManager : IDisposable
             FastDiscoveryInterval, FastDiscoveryInterval);
         _sampleTimer = new Timer(_ => SafeSample(), null,
             TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(Math.Max(1, _settings.SampleIntervalMinutes)));
+        // 本机电源独立高频采样：插电/拔电属于"用户立刻就想看到"的状态，跟 60s 主轮询走会明显迟钝。
+        // 读的是 GetSystemPowerStatus（纯内存读），没有外设耗电问题，可以放心拉到 5s。
+        if (_settings.MonitorSystemBattery)
+            _systemBatteryTimer = new Timer(_ => SafeSystemBatteryRefresh(), null,
+                TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5));
         // 历史保留定时执行：以前只在手动保存设置时清理，UI 文案写"自动清理"却是空话（CR-04）。
         // 启动后 30 秒首跑（避开启动高峰），之后每 6 小时一次。
         _cleanupTimer = new Timer(_ => CleanupHistoryNow(), null,
@@ -245,7 +288,6 @@ public sealed class DeviceManager : IDisposable
     {
         ApplySystemBatterySetting();
         StartTimers();
-        RefreshPresentation();
         // 立刻跑一轮：否则"关掉插件"要等最多 60 秒的下一个轮询才撤掉设备，
         // 期间列表/托盘仍显示着它，用户会以为开关没生效。
         _ = RequestPollAsync();
@@ -263,7 +305,6 @@ public sealed class DeviceManager : IDisposable
         _system.Stop();
         if (_devices.TryRemove(SystemBatteryWatcher.DeviceId, out _))
         {
-            _remainingTimeEstimates.TryRemove(SystemBatteryWatcher.DeviceId, out _);
             _tombstoneIds.Remove(SystemBatteryWatcher.DeviceId);
             _lowBatteryNotified.TryRemove(SystemBatteryWatcher.DeviceId, out _);
             Log.Info("已关闭本机电量监控，移除系统电量条目");
@@ -350,7 +391,6 @@ public sealed class DeviceManager : IDisposable
         foreach (var id in dropped)
         {
             _devices.TryRemove(id, out _);
-            _remainingTimeEstimates.TryRemove(id, out _);
             _tombstoneIds.Remove(id);
             _lowBatteryNotified.TryRemove(id, out _);
         }
@@ -487,7 +527,6 @@ public sealed class DeviceManager : IDisposable
             {
                 if (d.IsOnline && d.BatteryPercent.HasValue)
                     _history.Insert(DeviceCustomizationResolver.ApplyName(d, _settings.DeviceCustomizations));
-                RefreshRemainingTimeEstimate(d, notify: true);
             }
             ExpireTombstones();
         }
@@ -495,6 +534,13 @@ public sealed class DeviceManager : IDisposable
         {
             Log.Error("历史采样失败", ex);
         }
+    }
+
+    /// <summary>本机电源独立采样节拍（5s）：定时器回调不让异常逃逸（.NET Timer 异常会 fail-fast 整个进程）。</summary>
+    private void SafeSystemBatteryRefresh()
+    {
+        try { _system.Refresh(); }
+        catch (Exception ex) { Log.Warn($"本机电源采样失败: {ex.Message}"); }
     }
 
     private void Upsert(DeviceStatus incoming)
@@ -523,6 +569,17 @@ public sealed class DeviceManager : IDisposable
         // 占位条目一旦被真实来源接管（重新上线），就不再按占位规则过期剔除
         if (status.IsOnline) _tombstoneIds.Remove(status.Id);
 
+        // 曾被用户删除的设备重新上线：撤销"隐藏"标记，此后按新设备对待（自定义信息早已清空）
+        if (status.IsOnline && _settings.HiddenDeviceIds.Remove(status.Id))
+            _settings.Save();
+
+        // 新设备默认排最后：首次进入列表时追加到排序表末尾（排序与"新设备垫底"共用同一张表）
+        if (isNew && !_settings.DeviceOrder.Contains(status.Id))
+        {
+            _settings.DeviceOrder.Add(status.Id);
+            _settings.Save();
+        }
+
         if (changed)
         {
             // 电量变化立即写一条历史（含从离线恢复）
@@ -537,30 +594,6 @@ public sealed class DeviceManager : IDisposable
         }
 
         CheckLowBattery(status, previousPercent);
-        RefreshRemainingTimeEstimate(status, notify: true);
-    }
-
-    private void RefreshRemainingTimeEstimate(DeviceStatus device, bool notify)
-    {
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            var samples = _history.Query(device.Id, now - RemainingTimeEstimator.Window, now);
-            var result = device.BatteryPercent is { } percent
-                ? RemainingTimeEstimator.Evaluate(samples, percent, now)
-                : new(null, RemainingTimeUnavailableReason.MissingReading);
-            bool changed = !_remainingTimeEstimates.TryGetValue(device.Id, out var prior) || prior != result;
-            _remainingTimeEstimates[device.Id] = result;
-            if (notify && changed) DeviceUpdated?.Invoke(device);
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"剩余时间估算失败: {device.DisplayName}", ex);
-            var failure = new RemainingTimeEstimateResult(null, RemainingTimeUnavailableReason.InvalidHistory);
-            bool changed = !_remainingTimeEstimates.TryGetValue(device.Id, out var prior) || prior != failure;
-            _remainingTimeEstimates[device.Id] = failure;
-            if (notify && changed) DeviceUpdated?.Invoke(device);
-        }
     }
 
     /// <summary>低电量提醒的骤降保护阈值（百分点）：降幅超过它先暂缓提醒，等下次读数确认。</summary>
@@ -609,6 +642,7 @@ public sealed class DeviceManager : IDisposable
         _sampleTimer?.Dispose();
         _discoveryTimer?.Dispose();
         _cleanupTimer?.Dispose();
+        _systemBatteryTimer?.Dispose();
         foreach (var p in _plugins)
         {
             p.StatusPushed -= Upsert;

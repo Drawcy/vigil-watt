@@ -22,8 +22,17 @@ public sealed partial class AboutPage : Page
         App.UpdateStatusChanged += status => DispatcherQueue.TryEnqueue(() =>
             UpdateStatusText.Text = status);
         UpdateDownloadUi.ProgressChanged += OnUpdateProgressChanged;
+        // 本页在构造函数里订阅静态事件且没有解绑路径：必须常驻复用，否则每次进页面都会多挂一个处理器
         NavigationCacheMode = NavigationCacheMode.Required;
+        BuildUpdateModeOptions();
         Loaded += OnPageLoaded;
+    }
+
+    /// <summary>三档选项只建一次（页面常驻，重复进页面不能重复添加）。</summary>
+    private void BuildUpdateModeOptions()
+    {
+        foreach (var (value, label) in UpdateMode.Choices)
+            UpdateModeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = value });
     }
 
     private void OnPageLoaded(object sender, RoutedEventArgs e)
@@ -32,6 +41,34 @@ public sealed partial class AboutPage : Page
         UpdateStatusText.Text = string.IsNullOrEmpty(App.UpdateStatusMessage)
             ? "检查更新"
             : App.UpdateStatusMessage;
+        SyncUpdateMode();
+    }
+
+    /// <summary>把设置里的更新方式同步到下拉框与副标题（不触发保存）。</summary>
+    private void SyncUpdateMode()
+    {
+        var mode = UpdateMode.Normalize(App.Services.Settings.UpdateMode);
+        foreach (ComboBoxItem item in UpdateModeCombo.Items)
+        {
+            if (Equals(item.Tag, mode))
+            {
+                UpdateModeCombo.SelectedItem = item;
+                break;
+            }
+        }
+        UpdateModeHintText.Text = UpdateMode.Describe(mode);
+    }
+
+    private void UpdateMode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (UpdateModeCombo.SelectedItem is not ComboBoxItem item || item.Tag is not string tag) return;
+        var mode = UpdateMode.Normalize(tag);
+        var settings = App.Services.Settings;
+        UpdateModeHintText.Text = UpdateMode.Describe(mode);
+        if (settings.UpdateMode == mode) return;   // 同步选中时也会走到这里，别白写一次盘
+        settings.UpdateMode = mode;
+        settings.Save();
+        Log.Info($"更新方式已改为: {mode}");
     }
 
     private void OnUpdateProgressChanged(bool active, int percent, string message)

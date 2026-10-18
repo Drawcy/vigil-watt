@@ -106,16 +106,6 @@
                             <Border Style="{StaticResource RowDividerStyle}" />
                             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" Padding="0,12">
                                 <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock Text="剩余时间估算" Style="{StaticResource RowTitleStyle}" />
-                                    <TextBlock Text="根据近期放电速度估算，并显示在设备列表和任务栏悬停提示" Style="{StaticResource RowDescStyle}" />
-                                </StackPanel>
-                                <ToggleSwitch Grid.Column="1" x:Name="RemainingTimeEstimateToggle"
-                                              OnContent="开" OffContent="关"
-                                              MinWidth="0" VerticalAlignment="Center" />
-                            </Grid>
-                            <Border Style="{StaticResource RowDividerStyle}" />
-                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" Padding="0,12">
-                                <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
                                     <TextBlock Text="启动时最小化到托盘" Style="{StaticResource RowTitleStyle}" />
                                     <TextBlock Text="开机后直接驻留托盘，不弹出主窗口" Style="{StaticResource RowDescStyle}" />
                                 </StackPanel>
@@ -296,6 +286,16 @@
                                 </StackPanel>
                                 <!-- 档位由代码按 TaskbarBatteryOptions.Choices 生成，范围只有一处定义 -->
                                 <ComboBox Grid.Column="1" x:Name="TaskbarMaxCombo" Width="180"
+                                          VerticalAlignment="Center" />
+                            </Grid>
+                            <Border Style="{StaticResource RowDividerStyle}" />
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" Padding="0,12">
+                                <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="显示在哪块屏" Style="{StaticResource RowTitleStyle}" />
+                                    <TextBlock Text="多显示器时把贴片放到指定屏幕的任务栏；避开与 TrafficMonitor 等任务栏工具的视觉重叠"
+                                               Style="{StaticResource RowDescStyle}" />
+                                </StackPanel>
+                                <ComboBox Grid.Column="1" x:Name="TaskbarMonitorCombo" Width="180"
                                           VerticalAlignment="Center" />
                             </Grid>
                         </StackPanel>
