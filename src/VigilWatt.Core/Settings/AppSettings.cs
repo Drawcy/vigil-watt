@@ -41,7 +41,7 @@ public class AppSettings
     /// <summary>任务栏贴片显示内容。取值见 <c>VigilWatt.App.Services.TaskbarBatteryMode</c>：All（全部在线设备）/ Lowest（仅最低电量一台）；未知取值按 All。</summary>
     public string TaskbarBatteryMode { get; set; } = "All";
 
-    /// <summary>任务栏贴片最多显示几台设备，超出显示 "+N"。合法范围见 <c>VigilWatt.App.Services.TaskbarBatteryOptions</c>（1~5，默认 3）。</summary>
+    /// <summary>任务栏贴片最多显示几台设备，超出显示 "+N"。合法范围见 <c>VigilWatt.App.Services.TaskbarBatteryOptions</c>（1~6，默认 3）。</summary>
     public int TaskbarBatteryMaxDevices { get; set; } = 3;
 
     /// <summary>任务栏贴片相对"托盘左侧默认位"的水平偏移（物理像素，正数向右）。用户拖动后写入，重启沿用。</summary>
@@ -54,6 +54,9 @@ public class AppSettings
     public string TaskbarBatteryMonitorDevice { get; set; } = "";
 
     public bool StartMinimized { get; set; } = true;
+
+    /// <summary>更新方式。取值见 <c>VigilWatt.App.Services.UpdateMode</c>：Auto（有更新自动下载安装并重启）/ Notify（仅通知，等用户确认）/ Disabled（启动不检查）；未知取值按 Notify。</summary>
+    public string UpdateMode { get; set; } = "Notify";
 
     /// <summary>窗口背景材质。取值见 <c>VigilWatt.App.Services.WindowBackdrop</c>：Auto（跟随系统能力）/ Mica（云母，仅 Win11，不满足自动降级）/ Acrylic（磨砂，Win10 1809+）/ Solid（纯色分层底）；未知取值按 Auto。</summary>
     public string WindowBackdrop { get; set; } = "Auto";
@@ -74,6 +77,12 @@ public class AppSettings
     public bool MonitorSystemBattery { get; set; } = false;
 
     public Dictionary<string, DeviceCustomization> DeviceCustomizations { get; set; } = new();
+
+    /// <summary>设备显示顺序（Id 列表）。新设备默认排最后；不在列表里的 Id（被拔掉的设备）保留以便回来后位置不变。</summary>
+    public List<string> DeviceOrder { get; set; } = new();
+
+    /// <summary>被用户手动删除的离线设备 Id：阻止启动时从历史记录把它们复活成离线占位；设备重新上线后自动移出本表（按新设备处理）。</summary>
+    public List<string> HiddenDeviceIds { get; set; } = new();
 
     /// <summary>日志级别。取值见 <see cref="VigilWatt.Core.Utils.LogLevelNames"/>（Off/Debug/Info/Warn/Error），默认 Info；未知取值按 Info。**重启生效**（启动时赋给 Log.MinLevel）。</summary>
     public string LogLevel { get; set; } = VigilWatt.Core.Utils.LogLevelNames.Default;
@@ -113,6 +122,8 @@ public class AppSettings
 
             _cached = loaded ?? new AppSettings();
             _cached.DeviceCustomizations ??= new Dictionary<string, DeviceCustomization>();
+            _cached.DeviceOrder ??= new List<string>();
+            _cached.HiddenDeviceIds ??= new List<string>();
 
             // 老 settings.json 缺新插件的开关键时补默认值：反序列化会用 JSON 里的字典**整体替换**默认字典，
             // 缺键的插件会被 DeviceManager/设置页的 TryGetValue 判成"关闭"，新增插件（如 Betop）装上去默认不工作、用户还以为是功能没实现。

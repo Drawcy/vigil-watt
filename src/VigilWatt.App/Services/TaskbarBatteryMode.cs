@@ -33,7 +33,7 @@ public static class TaskbarBatteryMode
 public static class TaskbarBatteryOptions
 {
     public const int Min = 1;
-    public const int Max = 5;
+    public const int Max = 6;
     public const int Default = 3;
 
     /// <summary>下拉框档位（1~5）。</summary>

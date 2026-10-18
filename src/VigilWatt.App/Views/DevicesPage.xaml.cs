@@ -74,12 +74,24 @@ public sealed partial class DevicesPage : Page
         });
     }
 
+    /// <summary>上一次渲染的指纹：设备集合/电量/颜色/顺序都没变时不重建 ItemsSource——
+    /// 重建会作废全部 item 容器（每行 10+ 个 XAML 元素），合成器内存只涨不还。</summary>
+    private string? _rowsKey;
+
     private void Refresh()
     {
         var devices = App.Services.Manager.Devices;
-        DeviceList.ItemsSource = devices.Select(d => DeviceRowModel.From(d, App.Services.Settings)).ToList();
+        var settings = App.Services.Settings;
+
+        string key = BuildRowsKey(devices, settings);
+        if (key != _rowsKey || DeviceList.ItemsSource == null)
+        {
+            _rowsKey = key;
+            DeviceList.ItemsSource = devices.Select(d => DeviceRowModel.From(d, settings)).ToList();
+        }
+
         var online = devices.Count(d => d.IsOnline);
-        // 带上时间戳：即使设备数没变，用户也能一眼看出这次刷新确实跑过了
+        // 带上时间戳：即使设备数据没变，用户也能一眼看出这次刷新确实跑过了
         SummaryText.Text = $"{online} 台在线 / 共 {devices.Count} 台 · {DateTime.Now:HH:mm:ss} 更新";
 
         bool empty = devices.Count == 0;
@@ -87,11 +99,52 @@ public sealed partial class DevicesPage : Page
         EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    /// <summary>行内容指纹：参与显示的字段全在里面（不含"更新于"时间，否则每轮都不同）。</summary>
+    private static string BuildRowsKey(IReadOnlyCollection<DeviceStatus> devices, AppSettings settings)
+    {
+        var sb = new System.Text.StringBuilder(128);
+        foreach (var source in devices)
+        {
+            var d = DevicePresentation.Apply(source, settings);
+            sb.Append(d.Id).Append('|')
+              .Append(d.DisplayName).Append('|')
+              .Append((int)d.Kind).Append('|')
+              .Append(d.Protocol).Append('|')
+              .Append(d.BatteryPercent?.ToString() ?? "-").Append('|')
+              .Append((int)d.Charging).Append('|')
+              .Append(d.IsOnline ? '1' : '0').Append('|')
+              .Append(DevicePresentation.AccentColor(source.Id, settings) is { } c ? UiPalette.ToHex(c) : "-")
+              .Append(';');
+        }
+        return sb.ToString();
+    }
+
+    private void MoveUp_Click(object sender, RoutedEventArgs e) => MoveDevice(sender, -1);
+
+    private void MoveDown_Click(object sender, RoutedEventArgs e) => MoveDevice(sender, +1);
+
+    /// <summary>删除离线设备：列表条目、自定义信息、排序记录一并清掉；在线设备按钮不显示，这里再兜一次底。</summary>
+    private void DeleteDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement el || el.Tag is not string id) return;
+        if (!App.Services.Manager.RemoveOfflineDevice(id)) return;
+        Refresh();
+    }
+
+    /// <summary>手动排序：在 DeviceOrder 里移一位并落盘，然后让 Manager 广播一次，把新顺序同步到贴片/小组件/托盘。</summary>
+    private void MoveDevice(object sender, int delta)
+    {
+        if (sender is not FrameworkElement el || el.Tag is not string id) return;
+        App.Services.Manager.MoveInOrder(id, delta);
+        App.Services.Manager.RefreshPresentation();
+        Refresh();
+    }
+
     private async void CustomizeDevice_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuFlyoutItem item || item.Tag is not string id) return;
         var device = App.Services.Manager.Find(id);
-        if (device == null || device.Source == DeviceSource.System) return;
+        if (device == null) return;
 
         var settings = App.Services.Settings;
         settings.DeviceCustomizations.TryGetValue(id, out var current);
@@ -204,6 +257,81 @@ public sealed partial class DevicesPage : Page
         }
         UpdateIconChoiceCards();
 
+        // ---- 颜色（16 色预设）----
+        // 新设备统一用默认色（黑 = 不自定义颜色）；已有自定义色的设备预选回来。
+        string? selectedColorHex = UiPalette.TryParseHex(current?.ColorHex) is { } preset ? UiPalette.ToHex(preset) : null;
+
+        var colorChoices = new List<(RadioButton Button, Border Ring, FontIcon Check)>();
+        var colorGrid = new Grid { ColumnSpacing = 6, RowSpacing = 6, HorizontalAlignment = HorizontalAlignment.Left };
+        for (int i = 0; i < 4; i++)
+        {
+            colorGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            colorGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+        var clearBrush = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0));
+        var checkBrush = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255));
+        for (int i = 0; i < UiPalette.CustomColorChoices.Length; i++)
+        {
+            var swatchColor = UiPalette.CustomColorChoices[i];
+            var hex = UiPalette.ToHex(swatchColor);
+            var check = new FontIcon
+            {
+                Glyph = "\uE73E",
+                FontSize = 13,
+                Foreground = checkBrush,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+            };
+            var dot = new Border
+            {
+                Width = 26,
+                Height = 26,
+                CornerRadius = new CornerRadius(13),
+                Background = new SolidColorBrush(swatchColor),
+                Child = check,
+            };
+            var ring = new Border
+            {
+                Width = 34,
+                Height = 34,
+                CornerRadius = new CornerRadius(17),
+                BorderThickness = new Thickness(2),
+                BorderBrush = clearBrush,
+                Child = dot,
+            };
+            var radio = new RadioButton
+            {
+                GroupName = "DeviceColorChoice",
+                Tag = hex,
+                IsChecked = string.Equals(hex, selectedColorHex, StringComparison.OrdinalIgnoreCase),
+                Content = ring,
+                Padding = new Thickness(0),
+                MinWidth = 0,
+                MinHeight = 0,
+            };
+            radio.Checked += (_, _) =>
+            {
+                selectedColorHex = hex;
+                UpdateColorChoiceCards();
+            };
+            colorChoices.Add((radio, ring, check));
+            Grid.SetColumn(radio, i % 4);
+            Grid.SetRow(radio, i / 4);
+            colorGrid.Children.Add(radio);
+        }
+
+        void UpdateColorChoiceCards()
+        {
+            foreach (var (radio, ring, check) in colorChoices)
+            {
+                bool selected = radio.IsChecked == true;
+                ring.BorderBrush = selected ? accentBrush : clearBrush;
+                check.Visibility = selected ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+        UpdateColorChoiceCards();
+
         var body = new StackPanel { Spacing = 10, MinWidth = 400 };
         body.Children.Add(new TextBlock { Text = "设备名称", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         body.Children.Add(nameBox);
@@ -215,11 +343,45 @@ public sealed partial class DevicesPage : Page
             Margin = new Thickness(0, 4, 0, 0),
         });
         body.Children.Add(iconGrid);
+        body.Children.Add(new TextBlock
+        {
+            Text = "颜色（数字与电量条）",
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Margin = new Thickness(0, 4, 0, 0),
+        });
+        body.Children.Add(colorGrid);
+        var resetColorButton = new HyperlinkButton
+        {
+            Content = "使用默认色（黑）",
+            FontSize = 12,
+            Padding = new Thickness(0, 2, 0, 0),
+        };
+        resetColorButton.Click += (_, _) =>
+        {
+            selectedColorHex = null;
+            foreach (var (radio, _, _) in colorChoices) radio.IsChecked = false;
+            UpdateColorChoiceCards();
+        };
+        body.Children.Add(resetColorButton);
+        body.Children.Add(new TextBlock
+        {
+            Text = "点「恢复默认」可取消自定义名称、图标和颜色。",
+            FontSize = 12,
+            Foreground = Application.Current.Resources["TextFillColorTertiaryBrush"] as Brush,
+        });
+        // 内容较高（名称 + 8 图标 + 16 色）：套 ScrollViewer，否则超出对话框可视区后下面的颜色点不到
+        var scroller = new ScrollViewer
+        {
+            Content = body,
+            MaxHeight = 460,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollMode = ScrollMode.Disabled,
+        };
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = "设备外观",
-            Content = body,
+            Content = scroller,
             PrimaryButtonText = "保存",
             SecondaryButtonText = "恢复默认",
             CloseButtonText = "取消",
@@ -246,8 +408,8 @@ public sealed partial class DevicesPage : Page
             var custom = new DeviceCustomization();
             custom.Name = name;
             custom.IconKind = selectedKind;
-            if (custom.Name == null && custom.IconKind == null) settings.DeviceCustomizations.Remove(id);
-            else settings.DeviceCustomizations[id] = custom;
+            custom.ColorHex = selectedColorHex;
+            settings.DeviceCustomizations[id] = custom;
         }
 
         settings.Save();
@@ -259,12 +421,12 @@ public sealed partial class DevicesPage : Page
     {
         if (sender is not FrameworkElement row || row.DataContext is not DeviceRowModel model) return;
         var device = App.Services.Manager.Find(model.Id);
-        if (device == null || device.Source == DeviceSource.System) return;
+        if (device == null) return;
 
         var menu = new MenuFlyout();
         menu.Items.Add(new MenuFlyoutItem
         {
-            Text = "自定义名称和图标",
+            Text = "自定义图标、名称和颜色",
             Tag = model.Id,
         });
         var item = (MenuFlyoutItem)menu.Items[0];

@@ -20,6 +20,10 @@ public sealed class DeviceRowModel
     public string SourceText { get; init; } = "";
     public string SubText { get; init; } = "";
     public bool IsCharging { get; init; }
+    public bool IsOnline { get; init; }
+
+    /// <summary>离线设备才允许删除（在线设备显示的是排序按钮）。</summary>
+    public bool IsOffline => !IsOnline;
 
     /// <summary>来源徽标文字色（蓝牙蓝 / 2.4G 紫 / 本机青）。</summary>
     public Brush SourceBrush { get; init; } = UiPalette.Brush(UiPalette.Offline);
@@ -30,9 +34,12 @@ public sealed class DeviceRowModel
     /// <summary>电量条着色：充电蓝 / 低电红 / 中等橙 / 正常绿 / 离线灰。</summary>
     public Brush ProgressBrush { get; init; } = UiPalette.Brush(UiPalette.Offline);
 
-    /// <summary>百分比文字：仅异常状态着色（充电蓝 / 低电红 / 离线灰），正常态用主题前景色。
+    /// <summary>百分比文字：仅异常状态着色（自定义色 / 低电红 / 离线灰），正常态用主题前景色。
     /// 注意 x:Bind 绑 null 会压掉样式默认前景导致文字不可见，此属性必须非空。</summary>
     public Brush PercentBrush { get; init; } = UiPalette.Brush(UiPalette.Offline);
+
+    /// <summary>设备名称：与百分比/电量条同色（自定义色优先，否则主题前景）。</summary>
+    public Brush NameBrush { get; init; } = UiPalette.Brush(UiPalette.Offline);
 
     public static DeviceRowModel From(DeviceStatus source, AppSettings settings)
     {
@@ -43,13 +50,13 @@ public sealed class DeviceRowModel
         bool charging = DeviceStatusFormatter.IsCharging(d.Charging);
         string state = DeviceStatusFormatter.ChargeSuffix(d.Charging);
         if (!d.IsOnline) state = " · 离线";
-
-        var progressColor = d.IsOnline
-            ? UiPalette.BatteryLevel(percent, charging)
-            : UiPalette.Offline;
+        var customColor = DevicePresentation.AccentColor(d.Id, settings);
         var sourceColor = UiPalette.SourceTag(d.Source);
-        Brush percentBrush = !d.IsOnline ? UiPalette.Brush(UiPalette.Offline)
-            : charging ? UiPalette.Brush(UiPalette.Charging)
+
+        // 统一强调色（名称 / 百分比 / 电量条共用）：离线灰 / 自定义色 / 低电红 / 其余主题前景（黑）。
+        // **不再按充电或电量状态染绿染蓝**——用户明确要求默认黑色。
+        Brush accentBrush = !d.IsOnline ? UiPalette.Brush(UiPalette.Offline)
+            : customColor is { } c ? UiPalette.Brush(c)
             : percent is <= 20 ? UiPalette.Brush(UiPalette.Low)
             : Application.Current.Resources["TextFillColorPrimaryBrush"] as Brush
               ?? UiPalette.Brush(UiPalette.Offline);
@@ -64,10 +71,12 @@ public sealed class DeviceRowModel
             SourceText = DeviceSourceInfo.ShortLabel(d.Source),
             SourceBrush = UiPalette.Brush(sourceColor),
             SourceBackgroundBrush = UiPalette.Brush(UiPalette.Tint(sourceColor)),
-            SubText = $"{d.Protocol}{state} · 更新于 {d.LastUpdated:HH:mm:ss}",
+            SubText = $"{d.Protocol}{state}",
             IsCharging = charging,
-            ProgressBrush = UiPalette.Brush(progressColor),
-            PercentBrush = percentBrush,
+            IsOnline = d.IsOnline,
+            ProgressBrush = accentBrush,
+            PercentBrush = accentBrush,
+            NameBrush = accentBrush,
         };
     }
 

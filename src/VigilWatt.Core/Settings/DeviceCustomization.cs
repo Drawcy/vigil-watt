@@ -10,6 +10,9 @@ public sealed class DeviceCustomization
 {
     public string? Name { get; set; }
     public DeviceKind? IconKind { get; set; }
+
+    /// <summary>自定义强调色（<c>#RRGGBB</c>）。null = 不覆盖，按默认规则着色（列表数字黑、贴片按电量状态色）。</summary>
+    public string? ColorHex { get; set; }
 }
 
 public static class DeviceCustomizationResolver

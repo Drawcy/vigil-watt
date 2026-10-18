@@ -59,6 +59,11 @@ public sealed class TaskbarPillWindow : IDisposable
     private int _refreshQueued;
     private int _rebuildQueued;
     private bool _needRender = true;
+
+    /// <summary>位图内容版本；与上次提交的版本/位置都相同就跳过 Upload（1 秒一拍的逐行拷贝完全是浪费）。</summary>
+    private int _renderSerial;
+    private int _uploadedSerial = -1;
+    private Native.POINT _uploadedPos;
     private bool _disposed;
     private IReadOnlyList<TaskbarPillRenderer.HitChip> _hits = Array.Empty<TaskbarPillRenderer.HitChip>();
     private string? _hoverId;
@@ -279,6 +284,7 @@ public sealed class TaskbarPillWindow : IDisposable
         _hoverId = null;
         _hoverArmed = false;
         _needRender = true;
+        _uploadedSerial = -1;   // 窗口重建后必须重新提交一次位图
     }
 
     // ---------- 更新 ----------
@@ -369,6 +375,7 @@ public sealed class TaskbarPillWindow : IDisposable
         var devices = SelectDevices(out var overflowNames);
         var bmp = TaskbarPillRenderer.Render(
             devices, overflowNames, TaskbarPillRenderer.SkinFor(IsLightTheme()), _pillH, Scale,
+            CustomAccentColors(),
             out int width, out var hits);
 
         _bitmap?.Dispose();
@@ -376,15 +383,29 @@ public sealed class TaskbarPillWindow : IDisposable
         _pillW = width;
         _hits = hits;
         _needRender = false;
+        _renderSerial++;
 
         // 电量刷新很勤：同一台仍在鼠标下则只重摆位置，不重新计悬停
         if (_tipVisible && _shownTipId != null)
             RepositionTipIfStillHovering();
     }
 
+    /// <summary>自定义颜色表（设备 Id → GDI 颜色）；未设置或格式坏的设备不进来，绘制时回落到电量状态色。</summary>
+    private static Dictionary<string, Gdi.Color> CustomAccentColors()
+    {
+        var dict = new Dictionary<string, Gdi.Color>(StringComparer.Ordinal);
+        foreach (var (id, custom) in App.Services.Settings.DeviceCustomizations)
+        {
+            if (UiPalette.TryParseHex(custom.ColorHex) is { } c)
+                dict[id] = UiPalette.ToDrawing(c);
+        }
+        return dict;
+    }
+
     /// <summary>
     /// 取要显示的设备。本机电池**跟随「监控本机电量」开关**：开了就显示（用户主动要盯），
     /// 不开就排除（默认；Windows 任务栏已有电池图标，避免重复）。
+    /// 顺序：跟随 <see cref="App.Services.Manager.Devices"/>（= 用户手动排序），不再按电量重排。
     /// </summary>
     private static List<DeviceStatus> SelectDevices(out IReadOnlyList<string> overflowNames)
     {
@@ -393,13 +414,18 @@ public sealed class TaskbarPillWindow : IDisposable
         var all = App.Services.Manager.Devices
             .Where(d => d.IsOnline && (includeSystem || d.Source != DeviceSource.System))
             .Select(d => DevicePresentation.Apply(d, App.Services.Settings))
-            .OrderBy(d => DeviceStatusFormatter.IsChargingOrFull(d.Charging))
-            .ThenBy(d => d.BatteryPercent ?? 999)
-            .ThenBy(d => d.DisplayName)
             .ToList();
 
         if (TaskbarBatteryMode.Normalize(App.Services.Settings.TaskbarBatteryMode) == TaskbarBatteryMode.Lowest)
-            return all.Count > 0 ? [all[0]] : [];
+        {
+            // 「仅最低电量」模式需要在用户排序结果里挑电量最低的那台
+            var lowest = all
+                .OrderBy(d => DeviceStatusFormatter.IsChargingOrFull(d.Charging))
+                .ThenBy(d => d.BatteryPercent ?? 999)
+                .ThenBy(d => d.DisplayName)
+                .FirstOrDefault();
+            return lowest != null ? [lowest] : [];
+        }
 
         int max = TaskbarBatteryOptions.Clamp(App.Services.Settings.TaskbarBatteryMaxDevices);
         if (all.Count <= max) return all;
@@ -485,6 +511,9 @@ public sealed class TaskbarPillWindow : IDisposable
     private void Upload(int x, int y)
     {
         if (_bitmap == null) return;
+        // 内容与位置都没变：这一拍不重复拷贝/提交
+        if (_renderSerial == _uploadedSerial && x == _uploadedPos.X && y == _uploadedPos.Y) return;
+
         EnsureDib(_pillW, _pillH);
         if (_dib == IntPtr.Zero) return;
 
@@ -502,6 +531,11 @@ public sealed class TaskbarPillWindow : IDisposable
         };
         if (!Native.UpdateLayeredWindow(_hwnd, IntPtr.Zero, ref dst, ref size, _memDc, ref src, 0, ref blend, Native.ULW_ALPHA))
             Log.Warn($"任务栏贴片：UpdateLayeredWindow 失败，err={Marshal.GetLastWin32Error()}");
+        else
+        {
+            _uploadedSerial = _renderSerial;
+            _uploadedPos = dst;
+        }
     }
 
     private void CopyToDib(Gdi.Bitmap bmp, int w, int h)

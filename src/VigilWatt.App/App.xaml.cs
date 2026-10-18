@@ -191,6 +191,14 @@ public partial class App : Application
     {
         try
         {
+            var mode = UpdateMode.Normalize(Services.Settings.UpdateMode);
+            if (mode == UpdateMode.Disabled)
+            {
+                UpdateStatusMessage = "自动更新已禁用";
+                Log.Info("更新方式为「禁用更新」，跳过启动检查");
+                return;
+            }
+
             var updater = new UpdateService();
             _startupUpdateService = updater;
             if (!updater.IsInstalled)
@@ -210,10 +218,17 @@ public partial class App : Application
                 return;
             }
 
-            _pendingStartupUpdate = update;
             var version = update.TargetFullRelease.Version.ToString();
             UpdateStatusMessage = $"发现新版本 {version}";
             Log.Info($"{updater.SourceName} 发现新版本 {version}");
+
+            if (mode == UpdateMode.Auto)
+            {
+                await AutoUpdateAsync(updater, update, version);
+                return;
+            }
+
+            _pendingStartupUpdate = update;
             if (Services.Settings.StartMinimized)
             {
                 Services.Tray.ShowUpdateAvailable(version);
@@ -227,6 +242,35 @@ public partial class App : Application
         {
             UpdateStatusMessage = "自动检查失败：" + ex.Message;
             Log.Warn("启动时检查更新失败: " + ex.Message);
+        }
+    }
+
+    /// <summary>「有更新时自动更新」：静默下载 → 应用并重启。失败则退化为通知，别让用户完全不知情。</summary>
+    private static async Task AutoUpdateAsync(UpdateService updater, UpdateInfo update, string version)
+    {
+        UpdateStatusMessage = $"正在自动下载版本 {version}…";
+        Log.Info($"自动更新：开始下载版本 {version}");
+        try { Services.Tray.ShowUpdateDownloading(version); }
+        catch (Exception ex) { Log.Warn($"自动更新托盘提示失败: {ex.Message}"); }
+
+        try
+        {
+            await updater.DownloadAsync(update);
+            UpdateStatusMessage = $"版本 {version} 下载完成，正在重启应用…";
+            try { Services.Tray.ShowUpdateDownloadDone(version); }
+            catch (Exception ex) { Log.Warn($"自动更新完成提示失败: {ex.Message}"); }
+
+            Log.Info($"自动更新：版本 {version} 下载完成，应用并重启");
+            updater.ApplyAndRestart(update);
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusMessage = "自动更新失败：" + ex.Message;
+            Log.Warn("自动更新失败: " + ex.Message);
+            try { Services.Tray.ShowUpdateDownloadFailed(ex.Message); }
+            catch (Exception trayEx) { Log.Warn($"自动更新失败提示失败: {trayEx.Message}"); }
+            try { Services.Tray.ShowUpdateAvailable(version); }
+            catch (Exception trayEx) { Log.Warn($"退回通知模式失败: {trayEx.Message}"); }
         }
     }
 

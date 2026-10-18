@@ -10,11 +10,11 @@
 
 本机已打通：迈从 G87（0x13）、雷柏 VT3（status-report7，纯被动）、北通 T9（被动流）、经典蓝牙耳机（HFP 网关节点 `DEVPKEY_Device_BatteryLevel`）。罗技 Bolt 接收器（C548）+ MX Master 3S 已真机验证。本机电量可选，默认关。弱水时砂 2.4G 无电量通道，不再投入。
 
-任务栏贴片是原生子窗口 `Services/TaskbarPillWindow.cs`（`SetParent` 进 `Shell_TrayWnd`），不是 WinUI 覆盖窗。小组件仍用 `TransparentWindowSurface`；Win10 上因此没有 DWM 投影（BACKLOG **CR-57**，未做）。旧覆盖窗的白框、裁字、抢 Z 序在新贴片上已不存在。原理见 `dev/runtime-pitfalls.md` §16；§17 只对小组件。
+任务栏贴片是原生子窗口 `Services/TaskbarPillWindow.cs`（`SetParent` 进任务栏），不是 WinUI 覆盖窗。现由 `Services/TaskbarPillManager.cs` 按设置选屏：只贴主屏或指定副屏（`Shell_SecondaryTrayWnd`），支持 1–6 台设备单行/两行排布，拖动位置记忆。小组件仍用 `TransparentWindowSurface`；Win10 上因此没有 DWM 投影（BACKLOG **CR-57**，未做）。旧覆盖窗的白框、裁字、抢 Z 序在新贴片上已不存在。原理见 `dev/runtime-pitfalls.md` §16；§17 只对小组件。
 
-页面已缓存（`NavigationCacheMode = Required`），订阅跟 `Loaded`/`Unloaded`。设置页可搜索。日志按日：`logs\app-日期.log`。插件开关即写入授权，没有第二套「写入许可」。
+页面缓存：设备页、设置页、关于页 `Required`；历史页、统计页改为 `Disabled`（离开即释放，降低常驻视觉树）。订阅跟 `Loaded`/`Unloaded`，注意关于页在构造函数里订阅静态事件且无解绑路径，必须保持常驻。设置页可搜索。日志按日：`logs\app-日期.log`。插件开关即写入授权，没有第二套「写入许可」。
 
-设备列表支持外设右键自定义名称与图标，按设备 ID 持久化；实时展示读取展示快照，历史页面用当前自定义名，已有采样不改写，后续采样保留自定义名称。
+设备列表支持右键自定义名称、图标与强调色（16 色预设），支持上移/下移排序与删除离线设备；顺序持久化在 `DeviceOrder`，删除记录在 `HiddenDeviceIds`（防止历史记录复活），按设备 ID 持久化。更新方式三档（自动/仅通知/禁用）在关于页，存 `AppSettings.UpdateMode`。
 
 审查标准在 `docs/dev/review-standard.md`，未修项全集在 `docs/reviews/BACKLOG.md`（不要在本文再抄一份）。
 
@@ -46,11 +46,12 @@
 2. **雷柏充满**：放电 0x01、充电 0x02 已校准。充满时 `[7]` 还没采到，采到再补映射。
 3. **迈从 QHW**（3837:3033）已实现，遇到再验证。
 4. **北通鲲鹏20**（PID_5191）主动查询未真机验证。T9 的 `byte23` 低位仍只认 `0x50` = 未连接；验证方法见 protocols.md §4.4.1。
-5. **贴片人手复看**：拖动与位置记忆（CR-48）、自动隐藏、竖向/多屏（CR-41）、深色对比（CR-42）、是否压住任务栏按钮（CR-39）、右键菜单（CR-58/CR-60）、悬停设备名（多台/底栏/深色任务栏）。分辨率往返已于 2026-10-13 通过。Win10 小组件投影（CR-57）等用户决定是否做。
-6. **CR-53 真机**：迈从键盘睡够 3 分钟再唤醒，日志应在 1 分钟内出现重新上线。表在 `Plugins/WriteBackoff.cs`。
-7. **页面缓存真机**：来回切换是否变快、离开再回来数据是否仍刷新、设置值是否与 `settings.json` 一致、搜索是否仍可用。坑见 `dev/runtime-pitfalls.md` §19。相关未修项 CR-61 / CR-62 / CR-63。
-8. **启动更新确认框**：本轮只验到"托盘气泡 + 日志发现新版本"（`StartMinimized=true`，窗口没开）。打开主窗口应弹「发现新版本」确认框，未真机确认。
-9. **Win11 26200 复核**：本机已升到 26200（见 §1），CR-57（小组件自绘投影）等基于 Win10 的结论需按新系统重判；任务栏贴片在 Win11 上的表现（CR-39/41/42/48）也值得重看。
+5. **贴片人手复看**：副屏选屏与拖动记忆（在副屏 DPI 不同、任务栏自动隐藏、竖向任务栏下各看一眼）、深色对比（CR-42）、是否压住任务栏按钮（CR-39）、右键菜单（CR-58/CR-60）、悬停设备名（多台/两行/底栏/深色任务栏）。分辨率往返已于 2026-10-13 通过。Win10 小组件投影（CR-57）等用户决定是否做。
+6. **小组件未跟随自定义颜色**：设备页/贴片已用统一强调色，小组件仍按电量状态色；要统一时改 `WidgetWindow` 的取色路径。
+7. **CR-53 真机**：迈从键盘睡够 3 分钟再唤醒，日志应在 1 分钟内出现重新上线。表在 `Plugins/WriteBackoff.cs`。
+8. **页面缓存真机**：来回切换是否变快、离开再回来数据是否仍刷新、设置值是否与 `settings.json` 一致、搜索是否仍可用。坑见 `dev/runtime-pitfalls.md` §19。相关未修项 CR-61 / CR-62 / CR-63。
+9. **启动更新确认框**：本轮只验到"托盘气泡 + 日志发现新版本"（`StartMinimized=true`，窗口没开）。打开主窗口应弹「发现新版本」确认框，未真机确认。
+10. **Win11 26200 复核**：本机已升到 26200（见 §1），CR-57（小组件自绘投影）等基于 Win10 的结论需按新系统重判；任务栏贴片在 Win11 上的表现（CR-39/41/42/48）也值得重看。
 
 ## 5. 给下一个 AI 的注意事项
 
@@ -77,10 +78,13 @@
 | 新增品牌 | 新建插件继承 `BatteryPluginBase`。会写帧的默认关 |
 | 状态文案与充电 | `Models/DeviceStatusFormatter.cs`、`Models/ChargingStateMap.cs`；色值在 `Services/UiPalette.cs` |
 | 变化判定 | `Devices/DeviceChangeDetector.cs`。`Upsert` 必须先 `Clone()`，不要存共享可变实例 |
+| 设备排序 / 删除离线 | `DeviceManager.MoveInOrder` / `RemoveOfflineDevice`；持久化 `AppSettings.DeviceOrder` / `HiddenDeviceIds` |
+| 设备颜色 | `Settings/DeviceCustomization.ColorHex`；取色 `DevicePresentation.AccentColor`；色板 `UiPalette.CustomColorChoices` |
 | 轮询 / 采样 | `Devices/DeviceManager.cs`（code-flow.md） |
 | 经典蓝牙 | `Ble/BluetoothClassicWatcher.cs`、`Ble/ClassicDevNodeReader.cs` |
 | 本机电量 | `Power/SystemPowerReader.cs`、`Power/SystemBatteryWatcher.cs`。托盘在 `TrayService.Render` 里跳过 `DeviceSource.System` |
-| 任务栏贴片 | `Services/TaskbarPillWindow.cs`、`TaskbarPillRenderer.cs`、`TaskbarLayout.cs`。原理 runtime-pitfalls.md §16 |
+| 任务栏贴片 | `Services/TaskbarPillManager.cs`（选屏/句柄缓存）、`TaskbarPillWindow.cs`、`TaskbarPillRenderer.cs`、`TaskbarLayout.cs`；显示器枚举 `MonitorCatalog.cs`。原理 runtime-pitfalls.md §16 |
+| 更新方式 | `Services/UpdateMode.cs`；启动流程 `App.CheckForStartupUpdateAsync`；入口在 `Views/AboutPage` |
 | 小组件透明 | `Services/TransparentWindowSurface.cs`。贴片不用它。见 §17 |
 | 设备图标 | `Services/DeviceIconFactory.cs`（不要用字体图标） |
 | 程序图标 | `scripts/make-app-icon.py` → `Assets/VigilWatt.ico`；csproj `ApplicationIcon` 和 `MainWindow.ApplyWindowIcon` 都要 |

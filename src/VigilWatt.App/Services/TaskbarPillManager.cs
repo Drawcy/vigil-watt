@@ -21,6 +21,10 @@ public sealed class TaskbarPillManager : IDisposable
 
     /// <summary>当前贴片挂在哪块屏；空 = 还没贴上（屏不在 / 没任务栏）。</summary>
     private string? _attachedDevice;
+
+    /// <summary>上次解析到的任务栏句柄：2 秒一拍的全窗口枚举太浪费，句柄仍有效且屏没变就直接复用。</summary>
+    private IntPtr _cachedTaskbar;
+
     private bool _disposed;
 
     public TaskbarPillManager()
@@ -63,7 +67,7 @@ public sealed class TaskbarPillManager : IDisposable
             }
 
             // 那块屏上得有任务栏才贴；Win11 副屏可以关任务栏
-            var taskbar = FindTaskbarOnMonitor(target.Value.Handle);
+            var taskbar = ResolveTaskbar(target.Value.Handle);
             if (taskbar == IntPtr.Zero)
             {
                 Detach();
@@ -91,13 +95,27 @@ public sealed class TaskbarPillManager : IDisposable
         _attachedDevice = null;
     }
 
+    /// <summary>缓存优先：句柄仍有效且仍在目标屏上就直接复用，避免每 2 秒枚举一遍所有顶层窗口。</summary>
+    private IntPtr ResolveTaskbar(IntPtr hMonitor)
+    {
+        if (_cachedTaskbar != IntPtr.Zero
+            && Native.IsWindow(_cachedTaskbar)
+            && Native.MonitorFromWindow(_cachedTaskbar, Native.MONITOR_DEFAULTTONEAREST) == hMonitor)
+            return _cachedTaskbar;
+
+        _cachedTaskbar = FindTaskbarOnMonitor(hMonitor);
+        return _cachedTaskbar;
+    }
+
     /// <summary>指定显示器上的任务栏句柄（主屏 Shell_TrayWnd；副屏 Shell_SecondaryTrayWnd）。找不到返回零。</summary>
     private static IntPtr FindTaskbarOnMonitor(IntPtr hMonitor)
     {
         IntPtr found = IntPtr.Zero;
+        // 复用同一个 StringBuilder：枚举一次会调几百次回调，每次 new 一个纯属制造垃圾
+        var sb = new StringBuilder(64);
         Native.EnumWindows((hwnd, _) =>
         {
-            var sb = new StringBuilder(64);
+            sb.Clear();
             if (Native.GetClassNameW(hwnd, sb, sb.Capacity) <= 0) return true;
             var name = sb.ToString();
             if (name != Native.TaskbarClassName && name != Native.SecondaryTaskbarClassName) return true;

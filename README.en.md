@@ -34,8 +34,11 @@ Taskbar battery pill:
 - Reads BLE GATT battery services, Classic Bluetooth HFP gateway battery properties, and supported 2.4 GHz device protocols.
 - Shows the lowest battery level of online devices in the tray and alerts below a configurable threshold (20% by default).
 - Optional desktop widget, taskbar pill, and system battery monitoring; the system battery is excluded from the tray's lowest level.
+- The taskbar pill can be placed on a chosen display (primary or secondary); 1–6 devices lay out in one or two rows, and the position can be dragged and is remembered.
+- Devices support custom names, icons, and accent colors (16 presets); the device list supports manual ordering and removing offline devices.
 - Stores battery history with 24-hour, 7-day, and 30-day statistics; records can be managed by device.
 - Can launch at startup.
+- Three update modes: install automatically / notify only / disable updates.
 
 **Device plugin switches:** MCHOSE and Logitech plugins are off by default because reading requires sending query reports. Enable them by brand in Settings. Other strictly passive plugins do not write to devices.
 

@@ -34,8 +34,13 @@
 - 读取 BLE GATT 电池服务、经典蓝牙 HFP 网关节点电量和已适配 2.4G 设备协议。
 - 托盘显示在线设备的最低电量，低于可配置阈值时提醒（默认 20%）。
 - 可选显示桌面小组件、任务栏贴片和本机电池电量；本机电池不计入托盘最低电量。
+- 任务栏贴片可选择显示在哪块屏幕（主屏/副屏）；显示 1–6 台设备时自动单行或两行排布，位置可拖动并记忆。
+- ![1792326752064](image/README/1792326752064.png)![1792326780585](image/README/1792326780585.png)
+- 右键设备，支持自定义名称、图标和强调色（16 色预设）；设备列表支持手动排序、删除离线设备。
+- ![1792326814357](image/README/1792326814357.png)
 - 保存电量历史，提供 24 小时、7 天和 30 天统计，并可按设备管理记录。
 - 可设置开机启动。
+- 更新方式三档：有更新时自动更新 / 仅通知 / 禁用更新。
 
 **设备协议开关：** MCHOSE 与 Logitech 插件默认关闭，因为读取需要发送查询帧；可在设置中按品牌启用。其他纯被动插件不会主动向设备写入。
 
@@ -56,16 +61,16 @@
 
 下表区分已验证设备与已实现但尚待对应设备验证的协议：
 
-| 设备 / 协议 | 当前状态 |
-|---|---|
-| 迈从 G87 · 2.4G `0x13` | 本机验证 |
+| 设备 / 协议                                | 当前状态               |
+| ------------------------------------------ | ---------------------- |
+| 迈从 G87 · 2.4G `0x13`                  | 本机验证               |
 | 迈从新代 dongle · QHW（如 `3837:3033`） | 已实现，待对应设备验证 |
-| 北通 T9 · 厂商接口被动流 | 真机验证 |
-| 罗技 Bolt（C548 + MX Master 3S）· HID++ | 真机验证通过 |
-| 雷柏 VT3 二代 · 被动 `status-report7` | 本机验证 |
-| 英菲克 ZHEN · 被动 report `0x03` | 真机验证 |
-| 经典蓝牙 · HFP 网关节点属性 | EDIFIER W820NB 已验证 |
-| 本机电池 · `GetSystemPowerStatus` | 已接入，可选开启 |
+| 北通 T9 · 厂商接口被动流                  | 真机验证               |
+| 罗技 Bolt（C548 + MX Master 3S）· HID++   | 真机验证通过           |
+| 雷柏 VT3 二代 · 被动 `status-report7`   | 本机验证               |
+| 英菲克 ZHEN · 被动 report `0x03`        | 真机验证               |
+| 经典蓝牙 · HFP 网关节点属性               | EDIFIER W820NB 已验证  |
+| 本机电池 · `GetSystemPowerStatus`       | 已接入，可选开启       |
 
 弱水时砂炽天使 2.4G（`38FF:0001`）经主机侧与 RoseLink 检查确认没有电量通道，因此不支持显示电量。其他型号是否可用取决于其协议是否已适配。
 
@@ -98,14 +103,14 @@ scripts/                # 构建、打包及临时调试脚本
 
 ## 文档导航
 
-| 想了解 | 查看 |
-|---|---|
-| 全部文档与问题速查 | [docs/README.md](docs/README.md) |
-| 协议参考来源、实现依据和验证范围 | [docs/hardware/sources.md](docs/hardware/sources.md) |
-| 协议帧、设备兼容性与已证伪路径 | [docs/hardware/protocols.md](docs/hardware/protocols.md) |
-| 硬件读写安全规则 | [docs/hardware/safety.md](docs/hardware/safety.md) |
-| 架构与模块职责 | [docs/project/architecture.md](docs/project/architecture.md) |
-| 构建与测试说明 | [docs/dev/build.md](docs/dev/build.md) |
+| 想了解                           | 查看                                                        |
+| -------------------------------- | ----------------------------------------------------------- |
+| 全部文档与问题速查               | [docs/README.md](docs/README.md)                             |
+| 协议参考来源、实现依据和验证范围 | [docs/hardware/sources.md](docs/hardware/sources.md)         |
+| 协议帧、设备兼容性与已证伪路径   | [docs/hardware/protocols.md](docs/hardware/protocols.md)     |
+| 硬件读写安全规则                 | [docs/hardware/safety.md](docs/hardware/safety.md)           |
+| 架构与模块职责                   | [docs/project/architecture.md](docs/project/architecture.md) |
+| 构建与测试说明                   | [docs/dev/build.md](docs/dev/build.md)                       |
 
 ## 仓库与许可
 

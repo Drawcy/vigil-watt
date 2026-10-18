@@ -198,12 +198,12 @@ public class TaskbarBatteryOptionsTests
     public void ModeNormalize_OnlyAcceptsKnownValues(string? input, string expected)
         => Assert.Equal(expected, TaskbarBatteryMode.Normalize(input));
 
-    // T11：最多台数收敛到 1~5；0（老配置缺字段）按默认 3
+    // T11：最多台数收敛到 1~6；0（老配置缺字段）按默认 3
     [Theory]
     [InlineData(0, 3)]
     [InlineData(1, 1)]
-    [InlineData(5, 5)]
-    [InlineData(99, 5)]
+    [InlineData(6, 6)]
+    [InlineData(99, 6)]
     [InlineData(-4, 1)]
     public void MaxDevicesClamp_IntoRange(int input, int expected)
         => Assert.Equal(expected, TaskbarBatteryOptions.Clamp(input));

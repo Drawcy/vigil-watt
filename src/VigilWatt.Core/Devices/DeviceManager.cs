@@ -35,6 +35,7 @@ public sealed class DeviceManager : IDisposable
     private System.Threading.Timer? _sampleTimer;
     private System.Threading.Timer? _discoveryTimer;
     private System.Threading.Timer? _cleanupTimer;
+    private System.Threading.Timer? _systemBatteryTimer;
     private readonly object _pollSync = new();
     /// <summary>所有 pass（整轮轮询 / 快速发现）串行执行——插件内部的字典不是线程安全的。</summary>
     private readonly SemaphoreSlim _passGate = new(1, 1);
@@ -93,8 +94,62 @@ public sealed class DeviceManager : IDisposable
         return list;
     }
 
-    public IReadOnlyCollection<DeviceStatus> Devices => _devices.Values
-        .OrderByDescending(d => d.IsOnline).ThenBy(d => d.DisplayName).ToList();
+    /// <summary>设备列表：按用户手动排序（<see cref="AppSettings.DeviceOrder"/>）；未排序的新设备垫底，按显示名字典序稳定。</summary>
+    public IReadOnlyCollection<DeviceStatus> Devices
+    {
+        get
+        {
+            var order = _settings.DeviceOrder;
+            var rank = new Dictionary<string, int>(order.Count);
+            for (int i = 0; i < order.Count; i++) rank[order[i]] = i;
+            return _devices.Values
+                .OrderByDescending(d => d.IsOnline)
+                .ThenBy(d => rank.TryGetValue(d.Id, out var r) ? r : int.MaxValue)
+                .ThenBy(d => d.DisplayName)
+                .ToList();
+        }
+    }
+
+    /// <summary>把设备在 <see cref="AppSettings.DeviceOrder"/> 里上移/下移一位并落盘；调用方负责触发 UI 刷新。</summary>
+    public void MoveInOrder(string deviceId, int delta)
+    {
+        var order = _settings.DeviceOrder;
+        int cur = order.IndexOf(deviceId);
+        if (cur < 0)
+        {
+            // 还没进过排序表：先补到末尾再移动
+            order.Add(deviceId);
+            cur = order.Count - 1;
+        }
+        int target = Math.Clamp(cur + delta, 0, order.Count - 1);
+        if (target == cur) return;
+        order.RemoveAt(cur);
+        order.Insert(target, deviceId);
+        _settings.Save();
+    }
+
+    /// <summary>
+    /// 删除一台**已离线**的设备：从列表移除，并清掉自定义名称/图标/颜色与排序；
+    /// 同时记入 <see cref="AppSettings.HiddenDeviceIds"/>，阻止重启后从历史记录复活。
+    /// 设备再次上线时按新设备处理（详见 <see cref="Upsert"/>）。
+    /// </summary>
+    public bool RemoveOfflineDevice(string id)
+    {
+        if (!_devices.TryGetValue(id, out var device) || device.IsOnline) return false;
+
+        _devices.TryRemove(id, out _);
+        _tombstoneIds.Remove(id);
+        _lowBatteryNotified.TryRemove(id, out _);
+
+        _settings.DeviceOrder.Remove(id);
+        _settings.DeviceCustomizations.Remove(id);
+        if (!_settings.HiddenDeviceIds.Contains(id)) _settings.HiddenDeviceIds.Add(id);
+        _settings.Save();
+
+        Log.Info($"已删除离线设备: {id}");
+        DevicesChanged?.Invoke();
+        return true;
+    }
 
     public DeviceStatus? Find(string id) => _devices.TryGetValue(id, out var d) ? d : null;
 
@@ -128,6 +183,9 @@ public sealed class DeviceManager : IDisposable
             {
                 if (stat.Last < cutoff) continue;
                 if (_devices.ContainsKey(stat.DeviceId)) continue;
+
+                // 用户手动删除过的设备：不要靠历史记录把它复活（回来后按新设备处理）
+                if (_settings.HiddenDeviceIds.Contains(stat.DeviceId)) continue;
 
                 // 用户主动关掉的品牌插件，不要靠历史记录把它"复活"成离线条目——
                 // 那会让"关了开关却还显示"的老问题换个形式回来。
@@ -202,6 +260,7 @@ public sealed class DeviceManager : IDisposable
         _pollTimer?.Dispose();
         _sampleTimer?.Dispose();
         _discoveryTimer?.Dispose();
+        _systemBatteryTimer?.Dispose();
         // 首扫尽快跑（探测已是并行/短路，不再需要 2 秒缓冲）
         _pollTimer = new Timer(_ => _ = RequestPollAsync(), null,
             TimeSpan.FromMilliseconds(300), TimeSpan.FromMinutes(1));
@@ -210,6 +269,11 @@ public sealed class DeviceManager : IDisposable
             FastDiscoveryInterval, FastDiscoveryInterval);
         _sampleTimer = new Timer(_ => SafeSample(), null,
             TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(Math.Max(1, _settings.SampleIntervalMinutes)));
+        // 本机电源独立高频采样：插电/拔电属于"用户立刻就想看到"的状态，跟 60s 主轮询走会明显迟钝。
+        // 读的是 GetSystemPowerStatus（纯内存读），没有外设耗电问题，可以放心拉到 5s。
+        if (_settings.MonitorSystemBattery)
+            _systemBatteryTimer = new Timer(_ => SafeSystemBatteryRefresh(), null,
+                TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5));
         // 历史保留定时执行：以前只在手动保存设置时清理，UI 文案写"自动清理"却是空话（CR-04）。
         // 启动后 30 秒首跑（避开启动高峰），之后每 6 小时一次。
         _cleanupTimer = new Timer(_ => CleanupHistoryNow(), null,
@@ -472,6 +536,13 @@ public sealed class DeviceManager : IDisposable
         }
     }
 
+    /// <summary>本机电源独立采样节拍（5s）：定时器回调不让异常逃逸（.NET Timer 异常会 fail-fast 整个进程）。</summary>
+    private void SafeSystemBatteryRefresh()
+    {
+        try { _system.Refresh(); }
+        catch (Exception ex) { Log.Warn($"本机电源采样失败: {ex.Message}"); }
+    }
+
     private void Upsert(DeviceStatus incoming)
     {
         // 数据源（插件/watcher）会复用并原地改写同一个 DeviceStatus 实例。直接把它存进 _devices，
@@ -497,6 +568,17 @@ public sealed class DeviceManager : IDisposable
 
         // 占位条目一旦被真实来源接管（重新上线），就不再按占位规则过期剔除
         if (status.IsOnline) _tombstoneIds.Remove(status.Id);
+
+        // 曾被用户删除的设备重新上线：撤销"隐藏"标记，此后按新设备对待（自定义信息早已清空）
+        if (status.IsOnline && _settings.HiddenDeviceIds.Remove(status.Id))
+            _settings.Save();
+
+        // 新设备默认排最后：首次进入列表时追加到排序表末尾（排序与"新设备垫底"共用同一张表）
+        if (isNew && !_settings.DeviceOrder.Contains(status.Id))
+        {
+            _settings.DeviceOrder.Add(status.Id);
+            _settings.Save();
+        }
 
         if (changed)
         {
@@ -560,6 +642,7 @@ public sealed class DeviceManager : IDisposable
         _sampleTimer?.Dispose();
         _discoveryTimer?.Dispose();
         _cleanupTimer?.Dispose();
+        _systemBatteryTimer?.Dispose();
         foreach (var p in _plugins)
         {
             p.StatusPushed -= Upsert;
