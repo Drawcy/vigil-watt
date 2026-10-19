@@ -2,9 +2,11 @@
 
 English | [简体中文](README.md)
 
+> **This project is based on [evren-oct/vigil-watt](https://github.com/evren-oct/vigil-watt), originally created by evren-oct. The following describes the improvements and enhancements made in this fork, with code and documentation updated accordingly.**
+
 > A quick view of wireless device batteries on Windows: Bluetooth devices, supported 2.4 GHz peripherals, and an optional system battery in the tray and history.
 
-![Platform](https://img.shields.io/badge/Windows-10%2F11-0078d4) ![.NET](https://img.shields.io/badge/.NET-8-512bd4) ![License](https://img.shields.io/badge/license-MIT-green) [![Release](https://img.shields.io/github/v/release/evren-oct/vigil-watt?label=release&color=blue)](https://github.com/evren-oct/vigil-watt/releases)
+![Platform](https://img.shields.io/badge/Windows-10%2F11-0078d4) ![.NET](https://img.shields.io/badge/.NET-8-512bd4) ![License](https://img.shields.io/badge/license-MIT-green) [![Release](https://img.shields.io/github/v/release/Drawcy/vigil-watt?label=release&color=blue)](https://github.com/Drawcy/vigil-watt/releases)
 
 ## Screenshots
 
@@ -44,7 +46,7 @@ Taskbar battery pill:
 
 ## Download and quick start
 
-Download from [GitHub Releases](https://github.com/evren-oct/vigil-watt/releases) or the [Gitee mirror](https://gitee.com/YGWG-LX/vigil-watt/releases):
+Download from [GitHub Releases](https://github.com/Drawcy/vigil-watt/releases) or the [Gitee mirror](https://gitee.com/YGWG-LX/vigil-watt/releases):
 
 - `VigilWattApp-win-Setup.exe`: per-user installer with Velopack auto-updates.
 - `VigilWattApp-win-Portable.zip`: portable build; no installation required.
@@ -114,4 +116,4 @@ Detailed project documentation is primarily in Chinese.
 
 ## Repository and license
 
-[GitHub repository](https://github.com/evren-oct/vigil-watt) · [Gitee mirror](https://gitee.com/YGWG-LX/vigil-watt) · [MIT License](LICENSE) © 2026 evren
+[GitHub repository](https://github.com/Drawcy/vigil-watt) · [Gitee mirror](https://gitee.com/YGWG-LX/vigil-watt) · [MIT License](LICENSE) © 2026 evren, optimized version maintained by Drawcy

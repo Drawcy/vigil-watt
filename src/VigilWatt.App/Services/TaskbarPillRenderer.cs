@@ -21,7 +21,6 @@ public static class TaskbarPillRenderer
 
     private const double IconBox = 19;
     private const double IconTextGap = 4;
-    private const double BoltW = 9, BoltH = 13;
     private const double PercentFontSize = 15.5;
     private const double EmptyFontSize = 12;
     private const double EmptyTextWidthDip = 104;
@@ -29,7 +28,6 @@ public static class TaskbarPillRenderer
     /// <summary>两行模式下的尺寸：行高减半，图标与字号跟着缩，否则塞不下。</summary>
     private const double RowIconBox = 14.5;
     private const double RowPercentFontSize = 12.5;
-    private const double RowBoltW = 7, RowBoltH = 10.5;
     private const double RowIconTextGap = 3;
     /// <summary>同一行内相邻两格的间距。</summary>
     private const double RowChipGap = 8;
@@ -42,17 +40,17 @@ public static class TaskbarPillRenderer
     private static readonly Gdi.Bitmap MeasureBmp = new(1, 1, GdiImaging.PixelFormat.Format32bppPArgb);
     private static readonly Gdi.Graphics MeasureG = Gdi.Graphics.FromImage(MeasureBmp);
 
-    /// <summary>贴片前景配色。**没有底色/边框**，只有前景三项。</summary>
+    /// <summary>贴片前景配色。**没有底色/边框**，只有前景三项。IconStroke 与文字同色，图标更醒目。</summary>
     public readonly record struct Skin(Gdi.Color Divider, Gdi.Color IconStroke, Gdi.Color Text);
 
     public static Skin SkinFor(bool light) => light
         ? new Skin(
             Divider: Gdi.Color.FromArgb(0x33, 0x00, 0x00, 0x00),
-            IconStroke: Gdi.Color.FromArgb(0xFF, 0x5F, 0x5E, 0x5A),
+            IconStroke: Gdi.Color.FromArgb(0xFF, 0x1F, 0x1F, 0x1F),
             Text: Gdi.Color.FromArgb(0xFF, 0x1F, 0x1F, 0x1F))
         : new Skin(
             Divider: Gdi.Color.FromArgb(0x3D, 0xFF, 0xFF, 0xFF),
-            IconStroke: Gdi.Color.FromArgb(0xFF, 0xD2, 0xD2, 0xD2),
+            IconStroke: Gdi.Color.FromArgb(0xFF, 0xFF, 0xFF),
             Text: Gdi.Color.FromArgb(0xFF, 0xFF, 0xFF));
 
     /// <summary>悬停命中一格：客户区 X/宽与提示文案同源自绘制，避免另算宽度偏一两个像素。</summary>
@@ -62,10 +60,12 @@ public static class TaskbarPillRenderer
     public const string OverflowHitId = ":overflow:";
 
     /// <summary>画一整条贴片，返回位图；<paramref name="widthPx"/> 是裁掉右侧空白后的实际宽度。</summary>
-    /// <param name="accentColors">设备 Id → 用户自定义颜色；命中则百分比/闪电用它，否则按电量状态色。</param>
+    /// <param name="accentColors">设备 Id → 用户自定义颜色；命中则百分比用它，否则按电量状态色。</param>
+    /// <param name="lowBatteryThreshold">低电量阈值（%），≤ 该值时图标内部填红色。0 = 不填红色。</param>
     public static Gdi.Bitmap Render(
         IReadOnlyList<DeviceStatus> devices, IReadOnlyList<string> overflowNames,
         Skin skin, int heightPx, float scale, IReadOnlyDictionary<string, Gdi.Color>? accentColors,
+        int lowBatteryThreshold,
         out int widthPx, out IReadOnlyList<HitChip> hits)
     {
         using var percentFont = new Gdi.Font("Microsoft YaHei UI", (float)(PercentFontSize * scale), Gdi.FontStyle.Bold, Gdi.GraphicsUnit.Pixel);
@@ -100,7 +100,8 @@ public static class TaskbarPillRenderer
             {
                 var fontForChip = devices.Count >= TwoRowThreshold ? rowFont : percentFont;
                 foreach (var chip in chips)
-                    DrawChipAt(g, chip, skin, padLeft, scale, fontForChip, sf, AccentFor(chip.Device, accentColors, skin));
+                    DrawChipAt(g, chip, skin, padLeft, scale, fontForChip, sf,
+                        AccentFor(chip.Device, accentColors, skin), lowBatteryThreshold);
                 if (overflowChip != null)
                 {
                     var ov = overflowChip.Value;
@@ -228,21 +229,17 @@ public static class TaskbarPillRenderer
         }
     }
 
-    /// <summary>单行模式的一格宽（与旧版相同：图标 + 闪电槽位 + 百分比）。</summary>
+    /// <summary>单行模式的一格宽：图标 + 百分比（闪电叠在图标中心，不占槽位）。</summary>
     private static float SingleChipWidth(DeviceStatus d, float scale, Gdi.Font font, Gdi.StringFormat sf)
     {
         float w = (float)(IconBox * scale) + (float)(IconTextGap * scale);
-        if (DeviceStatusFormatter.IsCharging(d.Charging) && d.Kind != DeviceKind.Computer)
-            w += (float)(BoltW * scale) + (float)(IconTextGap * scale);
         return w + Measure(MeasureG, PercentText(d), font, sf);
     }
 
-    /// <summary>两行模式的一格宽：图标 + 闪电槽位 + 百分比（全部按 RowXxx 尺寸）。</summary>
+    /// <summary>两行模式的一格宽：图标 + 百分比（全部按 RowXxx 尺寸；闪电不占槽位）。</summary>
     private static float RowChipWidth(DeviceStatus d, float scale, Gdi.Font font, Gdi.StringFormat sf)
     {
         float w = (float)(RowIconBox * scale) + (float)(RowIconTextGap * scale);
-        if (DeviceStatusFormatter.IsCharging(d.Charging) && d.Kind != DeviceKind.Computer)
-            w += (float)(RowBoltW * scale) + (float)(RowIconTextGap * scale);
         return w + Measure(MeasureG, PercentText(d), font, sf);
     }
 
@@ -253,89 +250,37 @@ public static class TaskbarPillRenderer
         return d.BatteryPercent is <= 20 ? UiPalette.ToDrawing(UiPalette.Low) : skin.Text;
     }
 
-    /// <summary>按已算好的几何画一格：图标 +(闪电)+ 百分比。行内布局由 Layout 决定，这里只画。</summary>
+    /// <summary>按已算好的几何画一格：图标（按状态填充）+ 百分比。行内布局由 Layout 决定，这里只画。</summary>
     private static void DrawChipAt(
         Gdi.Graphics g, ChipGeometry chip, Skin skin, float padLeft, float scale,
-        Gdi.Font font, Gdi.StringFormat sf, Gdi.Color state)
+        Gdi.Font font, Gdi.StringFormat sf, Gdi.Color state, int lowBatteryThreshold)
     {
         var d = chip.Device;
         var charging = DeviceStatusFormatter.IsCharging(d.Charging);
 
-        // 单行用 IconBox/BoltW；两行用 RowIconBox/RowBoltW。判断依据是格子高度（行高必然小于总高）。
+        // 单行用 IconBox；两行用 RowIconBox。判断依据是格子高度（行高必然小于总高）。
         bool compact = chip.Height < (float)(IconBox * scale) * 1.5f;
         double iconBoxDip = compact ? RowIconBox : IconBox;
-        double boltWDip = compact ? RowBoltW : BoltW;
-        double boltHDip = compact ? RowBoltH : BoltH;
         double iconTextGapDip = compact ? RowIconTextGap : IconTextGap;
 
         float iconBox = (float)(iconBoxDip * scale);
         float x = padLeft + chip.X;
         float iconY = chip.Y + (chip.Height - iconBox) / 2f;
         var iconRect = new Gdi.RectangleF(x, iconY, iconBox, iconBox);
-        DeviceIconFactory.DrawGlyph(g, d.Kind, skin.IconStroke, iconRect, scale);
 
-        bool boltOnIcon = charging && d.Kind == DeviceKind.Computer;
-        if (boltOnIcon)
-            DrawBoltCenteredOnScreen(g, state, iconRect, scale, (float)boltWDip, (float)boltHDip, compact);
+        // 图标内部填充：充电绿 / 低电红 / 正常无填充
+        Gdi.Color? fillColor = null;
+        if (charging)
+            fillColor = Gdi.Color.FromArgb(0xFF, 0x9E, 0xE0, 0x9E);   // 更浅绿
+        else if (lowBatteryThreshold > 0 && d.BatteryPercent is int p && p <= lowBatteryThreshold)
+            fillColor = Gdi.Color.FromArgb(0xFF, 0xF0, 0x9E, 0x9E);   // 更浅红
+
+        DeviceIconFactory.DrawGlyph(g, d.Kind, skin.IconStroke, iconRect, scale, fillColor);
 
         x += iconBox + (float)(iconTextGapDip * scale);
 
-        if (charging && !boltOnIcon)
-        {
-            float bw = (float)(boltWDip * scale), bh = (float)(boltHDip * scale);
-            float boltTop = chip.Y + (chip.Height - bh) / 2f;
-            DrawBolt(g, state, x, boltTop, bw, bh);
-            x += bw + (float)(iconTextGapDip * scale);
-        }
-
         var text = PercentText(d);
         DrawText(g, text, font, state, new Gdi.RectangleF(x, chip.Y, Measure(g, text, font, sf) + 2, chip.Height), sf);
-    }
-
-    /// <summary>把闪电画到电脑图标的"屏幕"区域中心：屏幕是 iconBox 顶部一块（14×9.5 名义），不是整个 iconBox。</summary>
-    private static void DrawBoltCenteredOnScreen(
-        Gdi.Graphics g, Gdi.Color color, Gdi.RectangleF iconBox, float scale,
-        float boltWDip, float boltHDip, bool compact)
-    {
-        // 与 DeviceIconFactory.NominalSize(Computer)=(14,11)、屏幕高 9.5 对齐；两行模式下图形按比例缩
-        float nominal = compact ? (float)(RowIconBox / IconBox) : 1f;   // iconBox 缩比 = 图形缩比
-        float screenW = 14f * scale * nominal, screenH = 9.5f * scale * nominal;
-        float glyphH = 11f * scale * nominal;
-        float screenX = iconBox.X + (iconBox.Width - screenW) / 2f;
-        float screenY = iconBox.Y + (iconBox.Height - glyphH) / 2f;
-
-        float w = boltWDip * scale, h = boltHDip * scale;
-        float x = screenX + (screenW - w) / 2f;
-        float top = screenY + (screenH - h) / 2f;
-        using var path = new Gdi2.GraphicsPath();
-        path.AddPolygon(
-        [
-            new Gdi.PointF(x + w * 0.58f, top),
-            new Gdi.PointF(x, top + h * 0.56f),
-            new Gdi.PointF(x + w * 0.42f, top + h * 0.56f),
-            new Gdi.PointF(x + w * 0.30f, top + h),
-            new Gdi.PointF(x + w, top + h * 0.42f),
-            new Gdi.PointF(x + w * 0.54f, top + h * 0.42f),
-        ]);
-        using var brush = new Gdi.SolidBrush(color);
-        g.FillPath(brush, path);
-    }
-
-    /// <summary>充电闪电：**自绘多边形而不是画 "⚡" 字符**——字体缺字形时会渲染成方块（runtime-pitfalls.md §5.3）。</summary>
-    private static void DrawBolt(Gdi.Graphics g, Gdi.Color color, float x, float top, float w, float h)
-    {
-        using var path = new Gdi2.GraphicsPath();
-        path.AddPolygon(
-        [
-            new Gdi.PointF(x + w * 0.58f, top),
-            new Gdi.PointF(x, top + h * 0.56f),
-            new Gdi.PointF(x + w * 0.42f, top + h * 0.56f),
-            new Gdi.PointF(x + w * 0.30f, top + h),
-            new Gdi.PointF(x + w, top + h * 0.42f),
-            new Gdi.PointF(x + w * 0.54f, top + h * 0.42f),
-        ]);
-        using var brush = new Gdi.SolidBrush(color);
-        g.FillPath(brush, path);
     }
 
     private static List<HitChip> BuildHits(
