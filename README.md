@@ -2,15 +2,17 @@
 
 [English](README.en.md) | 简体中文
 
+> **本项目基于 [evren-oct/vigil-watt](https://github.com/evren-oct/vigil-watt) 开发，原作者为 evren-oct。以下为在原项目基础上的新增与改进，代码与文档均已同步更新。**
+
 > Windows 无线设备电量一览：蓝牙设备、2.4G 键鼠手柄和可选的本机电池，都能在托盘与历史记录中查看。
 
-![Platform](https://img.shields.io/badge/Windows-10%2F11-0078d4) ![.NET](https://img.shields.io/badge/.NET-8-512bd4) ![License](https://img.shields.io/badge/license-MIT-green) [![Release](https://img.shields.io/github/v/release/evren-oct/vigil-watt?label=release&color=blue)](https://github.com/evren-oct/vigil-watt/releases)
+![Platform](https://img.shields.io/badge/Windows-10%2F11-0078d4) ![.NET](https://img.shields.io/badge/.NET-8-512bd4) ![License](https://img.shields.io/badge/license-MIT-green) [![Release](https://img.shields.io/github/v/release/Drawcy/vigil-watt?label=release&color=blue)](https://github.com/Drawcy/vigil-watt/releases)
 
 ## 界面预览
 
 设备列表与电量：
 
-![设备电量](assets/screenshot-devices.png)
+![1792383940395](image/README/1792383940395.png)
 
 统计、历史和设置：
 
@@ -27,15 +29,17 @@
 
 任务栏电量贴片：
 
+![1792383913387](image/README/1792383913387.png)
+
 <p align="center"><img src="assets/screenshot-taskbar.png" width="480" alt="任务栏电量贴片"></p>
 
 ## 功能
 
 - 读取 BLE GATT 电池服务、经典蓝牙 HFP 网关节点电量和已适配 2.4G 设备协议。
 - 托盘显示在线设备的最低电量，低于可配置阈值时提醒（默认 20%）。
-- 可选显示桌面小组件、任务栏贴片和本机电池电量；本机电池不计入托盘最低电量。
+- 可选显示桌面小组件、任务栏贴片和本机电池电量。
 - 任务栏贴片可选择显示在哪块屏幕（主屏/副屏）；显示 1–6 台设备时自动单行或两行排布，位置可拖动并记忆。
-- ![1792326752064](image/README/1792326752064.png)![1792326780585](image/README/1792326780585.png)
+- ![1792383750388](image/README/1792383750388.png)![1792383860646](image/README/1792383860646.png)
 - 右键设备，支持自定义名称、图标和强调色（16 色预设）；设备列表支持手动排序、删除离线设备。
 - ![1792326814357](image/README/1792326814357.png)
 - 保存电量历史，提供 24 小时、7 天和 30 天统计，并可按设备管理记录。
@@ -46,7 +50,7 @@
 
 ## 下载与使用
 
-从 [GitHub Releases](https://github.com/evren-oct/vigil-watt/releases) 下载，或使用 [Gitee 镜像](https://gitee.com/YGWG-LX/vigil-watt/releases)：
+从 [GitHub Releases](https://github.com/Drawcy/vigil-watt/releases) 下载，或使用 [Gitee 镜像](https://gitee.com/YGWG-LX/vigil-watt/releases)：
 
 - `VigilWattApp-win-Setup.exe`：当前用户安装版，包含 Velopack 自动更新。
 - `VigilWattApp-win-Portable.zip`：免安装便携版。
@@ -114,4 +118,4 @@ scripts/                # 构建、打包及临时调试脚本
 
 ## 仓库与许可
 
-[GitHub 主仓库](https://github.com/evren-oct/vigil-watt) · [Gitee 镜像](https://gitee.com/YGWG-LX/vigil-watt) · [MIT License](LICENSE) © 2026 evren
+[GitHub 主仓库](https://github.com/Drawcy/vigil-watt) · [Gitee 镜像](https://gitee.com/YGWG-LX/vigil-watt) · [MIT License](LICENSE) © 2026 evren，优化版本由 Drawcy 维护

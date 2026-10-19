@@ -376,6 +376,7 @@ public sealed class TaskbarPillWindow : IDisposable
         var bmp = TaskbarPillRenderer.Render(
             devices, overflowNames, TaskbarPillRenderer.SkinFor(IsLightTheme()), _pillH, Scale,
             CustomAccentColors(),
+            App.Services.Settings.LowBatteryThreshold,
             out int width, out var hits);
 
         _bitmap?.Dispose();

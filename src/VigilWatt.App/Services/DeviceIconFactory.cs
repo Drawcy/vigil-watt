@@ -197,7 +197,8 @@ public static class DeviceIconFactory
     // 与上面 XAML 版的造型必须保持一致（同一份设计两套渲染器，改一处记得改另一处）。
 
     /// <summary>把设备图形画进 <paramref name="box"/>（像素、正方形），图形本体按名义尺寸居中。</summary>
-    public static void DrawGlyph(Gdi.Graphics g, DeviceKind kind, Gdi.Color stroke, Gdi.RectangleF box, float scale)
+    /// <param name="fill">图形内部填充色；null = 不填充（仅描边）。</param>
+    public static void DrawGlyph(Gdi.Graphics g, DeviceKind kind, Gdi.Color stroke, Gdi.RectangleF box, float scale, Gdi.Color? fill = null)
     {
         var (nominalW, nominalH) = NominalSize(kind);
         var w = nominalW * scale;
@@ -208,20 +209,27 @@ public static class DeviceIconFactory
 
         var penW = 1.2f * scale;
         using var pen = new Gdi.Pen(stroke, penW) { LineJoin = Gdi2.LineJoin.Round };
-        using var fill = new Gdi.SolidBrush(stroke);
+        using var fillBrush = new Gdi.SolidBrush(stroke);
+        using var fillPathBrush = fill.HasValue ? new Gdi.SolidBrush(fill.Value) : null;
 
         switch (kind)
         {
             case DeviceKind.Keyboard:
                 using (var p = RoundedRect(rect, 2.5f * scale))
+                {
+                    if (fillPathBrush != null) g.FillPath(fillPathBrush, p);
                     g.DrawPath(pen, p);
-                g.FillRectangle(fill, x + (w - 7 * scale) / 2f, y + h - 1.8f * scale - 1.4f * scale, 7 * scale, 1.4f * scale);
+                }
+                g.FillRectangle(fillBrush, x + (w - 7 * scale) / 2f, y + h - 1.8f * scale - 1.4f * scale, 7 * scale, 1.4f * scale);
                 break;
 
             case DeviceKind.Mouse:
                 using (var p = RoundedRect(rect, 4.5f * scale))
+                {
+                    if (fillPathBrush != null) g.FillPath(fillPathBrush, p);
                     g.DrawPath(pen, p);
-                g.FillRectangle(fill, x + (w - penW) / 2f, y + 2 * scale, penW, 3.5f * scale);
+                }
+                g.FillRectangle(fillBrush, x + (w - penW) / 2f, y + 2 * scale, penW, 3.5f * scale);
                 break;
 
             case DeviceKind.Headset:
@@ -231,25 +239,31 @@ public static class DeviceIconFactory
                 {
                     var cx = left ? x : x + w - 2.6f * scale;
                     using var p = RoundedRect(new Gdi.RectangleF(cx, y + h - 4.5f * scale, 2.6f * scale, 4.5f * scale), 1.3f * scale);
-                    g.FillPath(fill, p);
+                    g.FillPath(fillBrush, p);
                 }
                 break;
             }
 
             case DeviceKind.Speaker:
                 using (var p = RoundedRect(rect, 2.5f * scale))
+                {
+                    if (fillPathBrush != null) g.FillPath(fillPathBrush, p);
                     g.DrawPath(pen, p);
-                g.FillEllipse(fill, x + (w - 3 * scale) / 2f, y + 2.2f * scale, 3 * scale, 3 * scale);
-                g.FillEllipse(fill, x + (w - 4.4f * scale) / 2f, y + h - 2 * scale - 4.4f * scale, 4.4f * scale, 4.4f * scale);
+                }
+                g.FillEllipse(fillBrush, x + (w - 3 * scale) / 2f, y + 2.2f * scale, 3 * scale, 3 * scale);
+                g.FillEllipse(fillBrush, x + (w - 4.4f * scale) / 2f, y + h - 2 * scale - 4.4f * scale, 4.4f * scale, 4.4f * scale);
                 break;
 
             case DeviceKind.Gamepad:
                 using (var p = RoundedRect(rect, 4.5f * scale))
+                {
+                    if (fillPathBrush != null) g.FillPath(fillPathBrush, p);
                     g.DrawPath(pen, p);
+                }
                 foreach (var left in new[] { true, false })
                 {
                     var cx = left ? x + 2 * scale : x + w - 2 * scale - 2.6f * scale;
-                    g.FillEllipse(fill, cx, y + (h - 2.6f * scale) / 2f, 2.6f * scale, 2.6f * scale);
+                    g.FillEllipse(fillBrush, cx, y + (h - 2.6f * scale) / 2f, 2.6f * scale, 2.6f * scale);
                 }
                 break;
 
@@ -257,8 +271,11 @@ public static class DeviceIconFactory
             {
                 var screenH = 9.5f * scale;
                 using (var p = RoundedRect(new Gdi.RectangleF(x, y, w, screenH), 1.8f * scale))
+                {
+                    if (fillPathBrush != null) g.FillPath(fillPathBrush, p);
                     g.DrawPath(pen, p);
-                g.FillRectangle(fill, x + (w - 5 * scale) / 2f, y + h - 1.4f * scale, 5 * scale, 1.4f * scale);
+                }
+                g.FillRectangle(fillBrush, x + (w - 5 * scale) / 2f, y + h - 1.4f * scale, 5 * scale, 1.4f * scale);
                 break;
             }
 
