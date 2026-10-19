@@ -102,4 +102,28 @@ public class DeviceChangeDetectorTests
     {
         Assert.False(DeviceChangeDetector.IsImplausibleDrop(null, 1, 20));
     }
+
+    // CR-67：定时采样只采信"本轮真的读过"的设备，离线设备保留的旧 LastUpdated 必须被挡掉。
+    [Fact]
+    public void C9_最新读数在窗口内_采样放行()
+    {
+        var now = new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+        Assert.True(DeviceChangeDetector.HasFreshReading(now.AddMinutes(-1), now.AddMinutes(-2), now));
+    }
+
+    [Fact]
+    public void C10_上次读数早于窗口_采样跳过()
+    {
+        // 设备 20 分钟前就离线了：条目仍留着当时的电量与时刻，按旧逻辑每拍都会写一条假平台
+        var now = new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+        Assert.False(DeviceChangeDetector.HasFreshReading(now.AddMinutes(-20), now.AddMinutes(-2), now));
+    }
+
+    [Fact]
+    public void C11_窗口边界_恰好等于下界算旧读数()
+    {
+        var now = new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+        Assert.False(DeviceChangeDetector.HasFreshReading(now.AddMinutes(-2), now.AddMinutes(-2), now));
+        Assert.True(DeviceChangeDetector.HasFreshReading(now, now.AddMinutes(-2), now));
+    }
 }

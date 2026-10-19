@@ -83,6 +83,9 @@ public sealed class LogitechPlugin : IBatteryPlugin
 
     private readonly ConcurrentDictionary<string, ReceiverSession> _sessions = new();
 
+    /// <summary>最近一次 Attach 给的认领表：Detach 要按路径归还，否则重开插件后认领被自己占死（CR-69）。</summary>
+    private DeviceClaimRegistry? _claims;
+
     private sealed class DevEntry
     {
         public required DeviceStatus Status;
@@ -122,6 +125,7 @@ public sealed class LogitechPlugin : IBatteryPlugin
     private IReadOnlyList<DeviceStatus> AttachCore(
         IReadOnlyList<HidDeviceInfo> availableDevices, DeviceClaimRegistry claims)
     {
+        _claims = claims;
         var claimed = new List<DeviceStatus>();
 
         // 同 VID/PID 上按目录报文偏好跳过冗余接口（Bolt 跳短；Unifying 跳长）
@@ -720,13 +724,18 @@ public sealed class LogitechPlugin : IBatteryPlugin
         };
     }
 
+    /// <summary>
+    /// 插件关闭：释放会话与**接口认领**。认领不还回去的话，重新打开时 <c>AttachCore</c> 的 TryClaim 永远失败，
+    /// 而清单里也会留着已 Dispose 的会话，罗技设备直到重启进程都发现不了（CR-69）。
+    /// </summary>
     public void Detach()
     {
         int released = _sessions.Count;
-        foreach (var session in _sessions.Values)
+        foreach (var (path, session) in _sessions.ToArray())
         {
             StopListening(session);
             session.Io?.Dispose();
+            _claims?.Release(path, Name);
         }
         _sessions.Clear();
         if (released > 0) Log.Info($"罗技插件已卸载，释放 {released} 个会话");

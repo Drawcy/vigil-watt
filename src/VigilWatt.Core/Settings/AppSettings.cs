@@ -144,26 +144,35 @@ public class AppSettings
     /// 旧实现直接 <c>File.WriteAllText</c> 覆盖原文件，进程写一半崩溃/断电会留下截断的 JSON，
     /// 下次 <see cref="Load"/> 反序列化失败就**静默回落默认值**——用户全部设置丢失且无任何提示。
     /// 同卷 rename 在 NTFS 上是原子替换，读端只会看到"旧的完整文件"或"新的完整文件"。
+    /// ⚠ 整个"序列化 + 写 tmp + rename"必须在 <see cref="SaveGate"/> 内完成（CR-68）：调用方（后台轮询、UI 拖动）
+    /// 会并发改本对象的集合，锁外序列化会撞上 "Collection was modified" 而整次保存被吞。
     /// </summary>
     public void Save()
     {
-        var tmp = SettingsPath + ".tmp";
-        try
+        lock (SaveGate)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            var bytes = new UTF8Encoding(false).GetBytes(JsonSerializer.Serialize(this, JsonOpts));
-            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            // tmp 名带 Guid：即使有外部工具/旧进程残留同名文件，也不会互相删掉对方正在写的文件。
+            var tmp = $"{SettingsPath}.{Guid.NewGuid():N}.tmp";
+            try
             {
-                fs.Write(bytes, 0, bytes.Length);
-                fs.Flush(flushToDisk: true);
+                Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+                var bytes = new UTF8Encoding(false).GetBytes(JsonSerializer.Serialize(this, JsonOpts));
+                using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    fs.Write(bytes, 0, bytes.Length);
+                    fs.Flush(flushToDisk: true);
+                }
+                File.Move(tmp, SettingsPath, overwrite: true);
+                lock (CacheGate) _cached = this;
             }
-            File.Move(tmp, SettingsPath, overwrite: true);
-            lock (CacheGate) _cached = this;
-        }
-        catch (Exception ex)
-        {
-            Log.Error("settings.json 保存失败", ex);
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* 清不掉临时文件不致命，忽略 */ }
+            catch (Exception ex)
+            {
+                Log.Error("settings.json 保存失败", ex);
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* 清不掉临时文件不致命，忽略 */ }
+            }
         }
     }
+
+    /// <summary>串行化所有落盘（CR-68）；与 <see cref="CacheGate"/> 分开：后者只保护 <see cref="_cached"/> 的替换。</summary>
+    private static readonly object SaveGate = new();
 }

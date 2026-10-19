@@ -28,6 +28,8 @@ public sealed class SystemBatteryWatcher : IDisposable
         lock (_sync)
         {
             if (_started) return;
+            // 重启必须让下一帧当作"新设备"：Stop 时快照仍在，若沿用旧快照，Apply 比较不到变化就永远不推送（CR-66）。
+            _status = null;
             _started = true;
         }
         Log.Info("系统电量监视器已启动");

@@ -29,6 +29,9 @@ public sealed class DeviceManager : IDisposable
     /// <summary>每台设备"是否已就低电量提醒过"。电量回到阈值之上（或充电）就复位，下次跌破再提醒一次；
     /// 设备条目被移除时也一并清掉（见 <see cref="ExpireTombstones"/> / <see cref="DropDevicesOf"/>，CR-23）。</summary>
     private readonly ConcurrentDictionary<string, bool> _lowBatteryNotified = new();
+
+    /// <summary>每台设备上次写进历史的采样时间（UTC）。定时采样据此去重：离线条目保留旧读数，不按 LastUpdated 重复写假平台（CR-67）。</summary>
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSampledAt = new();
     /// <summary>由历史记录补出的离线占位条目（见 <see cref="RestoreOfflineTombstones"/>）；过期剔除时只能删这些，不能误删"在位但读不到"的真实设备。</summary>
     private readonly HashSet<string> _tombstoneIds = new();
     private System.Threading.Timer? _pollTimer;
@@ -267,8 +270,9 @@ public sealed class DeviceManager : IDisposable
         // 快速发现节拍：见 RequestDiscoveryAsync（设备一醒/开机就十几秒内进列表，而非苦等 60 秒主轮询）
         _discoveryTimer = new Timer(_ => _ = RequestDiscoveryAsync(), null,
             FastDiscoveryInterval, FastDiscoveryInterval);
+        // 首拍与主轮询错开 20 秒：同一拍里轮询的 Upsert 和这里会给同一台设备写两条同 ts 的点（CR-67 实测）。
         _sampleTimer = new Timer(_ => SafeSample(), null,
-            TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(Math.Max(1, _settings.SampleIntervalMinutes)));
+            TimeSpan.FromSeconds(20), TimeSpan.FromMinutes(Math.Max(1, _settings.SampleIntervalMinutes)));
         // 本机电源独立高频采样：插电/拔电属于"用户立刻就想看到"的状态，跟 60s 主轮询走会明显迟钝。
         // 读的是 GetSystemPowerStatus（纯内存读），没有外设耗电问题，可以放心拉到 5s。
         if (_settings.MonitorSystemBattery)
@@ -299,6 +303,8 @@ public sealed class DeviceManager : IDisposable
         if (_settings.MonitorSystemBattery)
         {
             _system.Start();
+            // 关→开时条目已被移除，而 watcher 只在"状态实质变化"时推送：快照没变就不会自己回来（CR-66）。
+            _system.Refresh();
             return;
         }
 
@@ -519,14 +525,24 @@ public sealed class DeviceManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// 定时采样：只写"**在线且有 [采样时刻, 采样时刻 − 半个周期] 内新读数**"的设备，
+    /// 离线设备保留的旧读数不再按 LastUpdated 重复落盘（CR-67）。
+    /// </summary>
     private void SafeSample()
     {
         try
         {
+            var now = DateTimeOffset.UtcNow;
             foreach (var d in _devices.Values)
             {
-                if (d.IsOnline && d.BatteryPercent.HasValue)
-                    _history.Insert(DeviceCustomizationResolver.ApplyName(d, _settings.DeviceCustomizations));
+                if (!d.IsOnline || !d.BatteryPercent.HasValue) continue;
+                var freshAfter = now - TimeSpan.FromMinutes(Math.Max(1, _settings.SampleIntervalMinutes) / 2.0);
+                if (!DeviceChangeDetector.HasFreshReading(d.LastUpdated, freshAfter, now)) continue;
+                if (_lastSampledAt.TryGetValue(d.Id, out var last) && d.LastUpdated <= last) continue;   // 同一读数不写两条
+
+                _history.Insert(DeviceCustomizationResolver.ApplyName(d, _settings.DeviceCustomizations));
+                _lastSampledAt[d.Id] = d.LastUpdated;
             }
             ExpireTombstones();
         }
@@ -582,9 +598,14 @@ public sealed class DeviceManager : IDisposable
 
         if (changed)
         {
-            // 电量变化立即写一条历史（含从离线恢复）
-            if (status.BatteryPercent.HasValue)
+            // 电量变化（含从离线恢复）立即写一条历史。
+            // ⚠ 只写在线状态：设备掉线那一刻 LastUpdated 会前进，"在线→离线"也会被判成变化——
+            // 照着写就成了"下线时刻的读数横在那里"，与 SafeSample 的采样点重叠成假平台（CR-67 实测）。
+            if (status.IsOnline && status.BatteryPercent.HasValue)
+            {
                 _history.Insert(DeviceCustomizationResolver.ApplyName(status, _settings.DeviceCustomizations));
+                _lastSampledAt[status.Id] = status.LastUpdated;
+            }
             DeviceUpdated?.Invoke(status);
         }
         else if (status.Kind != previousKind)

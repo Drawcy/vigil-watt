@@ -6,7 +6,7 @@
 
 ## 1. 当前状态
 
-当前安装包 **1.2.0**（`dist/`，本机试装用；正式线上以 GitHub 最新 Release 为准，Gitee 是回退源）。更新源：GitHub 优先、8 秒不通回退 Gitee（**尚未发版**，1.2.0 及以前只走 Gitee）。发新版时留着上一版 `*-full.nupkg`，才会有 delta；两个仓库都要传同一份资产，规则见 `dev/build.md` §8。
+当前版本 **1.2.1**（GitHub Release 提供便携 zip；`dist/` 里 1.2.0 为本机试装用；正式线上以 GitHub 最新 Release 为准，Gitee 是回退源）。更新源：GitHub 优先、8 秒不通回退 Gitee（**尚未发版**，1.2.0 及以前只走 Gitee）。发新版时留着上一版 `*-full.nupkg`，才会有 delta；两个仓库都要传同一份资产，规则见 `dev/build.md` §8。
 
 本机已打通：迈从 G87（0x13）、雷柏 VT3（status-report7，纯被动）、北通 T9（被动流）、经典蓝牙耳机（HFP 网关节点 `DEVPKEY_Device_BatteryLevel`）。罗技 Bolt 接收器（C548）+ MX Master 3S 已真机验证。本机电量可选，默认关。弱水时砂 2.4G 无电量通道，不再投入。
 

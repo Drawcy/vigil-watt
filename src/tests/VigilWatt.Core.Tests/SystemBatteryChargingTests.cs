@@ -60,4 +60,28 @@ public class SystemBatteryChargingTests
         var s = SystemPowerSnapshot.Unavailable;
         Assert.False(s.HasBattery);
     }
+
+    // CR-66：设置页关→开本机电量监控。Stop 只清 _started，快照仍在；若 Start 不复位快照，
+    // 重启后第一帧与旧快照"没有变化"，DeviceUpdated 永不触发，条目就这么消失了。
+    [Fact]
+    public void 停止后再启动_快照复位_首帧重新当作新设备推送()
+    {
+        using var watcher = new SystemBatteryWatcher();
+        var pushes = new List<DeviceStatus>();
+        watcher.DeviceUpdated += pushes.Add;
+
+        watcher.Start();
+        watcher.Refresh();
+
+        // 这台机器没有电池时 Refresh 不会推送，本用例的前提不成立，直接跳过断言
+        if (pushes.Count == 0) return;
+
+        watcher.Stop();
+        pushes.Clear();
+        watcher.Start();
+        watcher.Refresh();
+
+        Assert.NotEmpty(pushes);
+        Assert.Equal(SystemBatteryWatcher.DeviceId, pushes[^1].Id);
+    }
 }

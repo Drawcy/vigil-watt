@@ -18,4 +18,8 @@ public static class DeviceChangeDetector
     /// <summary>降幅超过 <paramref name="maxDropPoints"/> 视为不可信（休眠/关机的伪读数），先不提醒、等下次读数确认。</summary>
     public static bool IsImplausibleDrop(int? previousPercent, int currentPercent, int maxDropPoints) =>
         previousPercent is { } prev && prev - currentPercent > maxDropPoints;
+
+    /// <summary>定时采样判"这一拍是否真读到新值"：LastUpdated 落在 (from, to] 内。离线设备保留的旧时刻会被挡掉（CR-67）。</summary>
+    public static bool HasFreshReading(DateTimeOffset lastUpdated, DateTimeOffset from, DateTimeOffset to) =>
+        lastUpdated > from && lastUpdated <= to;
 }
