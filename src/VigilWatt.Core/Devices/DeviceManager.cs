@@ -113,21 +113,66 @@ public sealed class DeviceManager : IDisposable
         }
     }
 
-    /// <summary>把设备在 <see cref="AppSettings.DeviceOrder"/> 里上移/下移一位并落盘；调用方负责触发 UI 刷新。</summary>
-    public void MoveInOrder(string deviceId, int delta)
+    /// <summary>
+    /// 把设备在 <see cref="AppSettings.DeviceOrder"/> 里上移/下移一行并落盘；调用方负责触发 UI 刷新。
+    ///
+    /// 排序表存的是**原始设备 ID**（含合并组的每个成员），但界面传进来的是**行 ID**——
+    /// 合并后一行对应组合 ID（<c>a+b</c>），直接 IndexOf 永远找不到，表现为"点了上移没反应"。
+    /// 故先把行 ID 展开成成员，再以「相邻行」为单位交换；整行与相邻行可能是不同长度的合并组，
+    /// 所以用块交换而不是逐 ID 平移，否则短的那行会被长的那行挤散。
+    /// </summary>
+    public void MoveInOrder(string rowId, int delta)
     {
+        if (delta == 0) return;
         var order = _settings.DeviceOrder;
-        int cur = order.IndexOf(deviceId);
-        if (cur < 0)
+        var groups = MergeGroups;
+
+        var members = HistoryMergeResolver.ExpandIds(rowId, groups)
+            .Where(id => _devices.ContainsKey(id))
+            .OrderBy(id => order.IndexOf(id) is var i && i >= 0 ? i : int.MaxValue)
+            .ThenBy(id => id, StringComparer.Ordinal)
+            .ToList();
+        if (members.Count == 0) return;
+
+        // 行没进过排序表（新设备）：按当前显示顺序补到末尾，否则 IndexOf 找不到、表现为点了没反应
+        if (!members.Any(order.Contains))
+            foreach (var id in members) if (!order.Contains(id)) order.Add(id);
+
+        // order 里也可能残留已不存在的 ID，逐行遍历时跳过
+        var rows = new List<List<string>>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in order)
         {
-            // 还没进过排序表：先补到末尾再移动
-            order.Add(deviceId);
-            cur = order.Count - 1;
+            if (!_devices.ContainsKey(id) || !seen.Add(id)) continue;
+            var group = groups.FirstOrDefault(g => g.Contains(id, StringComparer.Ordinal));
+            if (group is null)
+            {
+                rows.Add(new List<string> { id });
+                continue;
+            }
+            var row = new List<string>();
+            foreach (var x in group)
+                if (_devices.ContainsKey(x) && seen.Add(x)) row.Add(x);
+            rows.Add(row);
         }
-        int target = Math.Clamp(cur + delta, 0, order.Count - 1);
-        if (target == cur) return;
-        order.RemoveAt(cur);
-        order.Insert(target, deviceId);
+
+        int index = rows.FindIndex(r => r.Contains(members[0], StringComparer.Ordinal));
+        if (index < 0) return;
+        int other = index + delta;
+        if (other < 0 || other >= rows.Count) return;
+
+        var rebuilt = new List<string>(order.Count);
+        for (int i = 0; i < rows.Count; i++)
+        {
+            if (i == index) rebuilt.AddRange(rows[other]);
+            else if (i == other) rebuilt.AddRange(rows[index]);
+            else rebuilt.AddRange(rows[i]);
+        }
+
+        // 排序表里原本就有但当前不在 _devices 里的 ID，原样保留在末尾
+        rebuilt.AddRange(order.Where(id => !seen.Contains(id)));
+        order.Clear();
+        order.AddRange(rebuilt);
         _settings.Save();
     }
 
@@ -147,6 +192,20 @@ public sealed class DeviceManager : IDisposable
         _settings.DeviceOrder.Remove(id);
         _settings.DeviceCustomizations.Remove(id);
         if (!_settings.HiddenDeviceIds.Contains(id)) _settings.HiddenDeviceIds.Add(id);
+
+        // 合并组里也要摘掉：不摘的话组里永远留着这条已不在列表的 ID，行的组合 ID
+        // 与现存成员拼不回来 → 该行之后无法再删除/改名（CR-71 真机复现）
+        var groups = DeviceMergeResolver.Normalize(_settings.DeviceMergeGroups);
+        bool groupChanged = false;
+        var cleaned = new List<List<string>>(groups.Count);
+        foreach (var group in groups)
+        {
+            if (!group.Remove(id)) { cleaned.Add(group); continue; }
+            groupChanged = true;
+            if (group.Count >= 2) cleaned.Add(group);   // 只剩一个：整组作废，该设备恢复为独立行
+        }
+        if (groupChanged) _settings.DeviceMergeGroups = cleaned;
+
         _settings.Save();
 
         Log.Info($"已删除离线设备: {id}");
@@ -155,6 +214,64 @@ public sealed class DeviceManager : IDisposable
     }
 
     public DeviceStatus? Find(string id) => _devices.TryGetValue(id, out var d) ? d : null;
+
+    /// <summary>
+    /// 合并组（已规范化，每组 ≥2 个 ID，一个 ID 只属于一组）。UI 与历史聚合都读它。
+    /// </summary>
+    public IReadOnlyList<IReadOnlyList<string>> MergeGroups
+        => DeviceMergeResolver.Normalize(_settings.DeviceMergeGroups);
+
+    /// <summary>
+    /// 把若干设备合并成一台。会先**从原有组里摘掉**这些 ID（避免一个 ID 同时在两组里），
+    /// 再连同它们的旧组一起合并成新组——例如 2.4G 已和 A 合并，再把蓝牙合进来，结果是三者一组。
+    /// </summary>
+    public bool MergeDevices(IReadOnlyCollection<string> ids)
+    {
+        var incoming = ids.Where(id => _devices.ContainsKey(id))
+                          .Distinct(StringComparer.Ordinal)
+                          .ToList();
+        if (incoming.Count < 2) return false;
+
+        var merged = new List<string>(incoming);
+        var remaining = new List<List<string>>();
+        foreach (var group in DeviceMergeResolver.Normalize(_settings.DeviceMergeGroups))
+        {
+            var hit = group.Where(incoming.Contains).ToList();
+            if (hit.Count == 0)
+            {
+                remaining.Add(group);
+                continue;
+            }
+            // 同组里没被点名的成员一并带过来
+            foreach (var id in group)
+                if (!merged.Contains(id, StringComparer.Ordinal)) merged.Add(id);
+        }
+
+        remaining.Add(merged);
+        _settings.DeviceMergeGroups = remaining;
+        _settings.Save();
+        Log.Info($"已合并设备: {string.Join(" + ", merged)}");
+        RefreshPresentation();
+        return true;
+    }
+
+    /// <summary>拆开一个合并组。行仍按各通道分别显示。</summary>
+    public bool SplitDevice(IReadOnlyCollection<string> ids)
+    {
+        var target = new HashSet<string>(ids, StringComparer.Ordinal);
+        var groups = DeviceMergeResolver.Normalize(_settings.DeviceMergeGroups);
+        if (!groups.Any(g => g.Any(target.Contains))) return false;
+
+        _settings.DeviceMergeGroups = groups.Where(g => !g.Any(target.Contains)).ToList();
+        _settings.Save();
+        Log.Info($"已拆分设备: {string.Join(", ", target)}");
+        RefreshPresentation();
+        return true;
+    }
+
+    /// <summary>该设备 ID 所在的合并组（不在任何组里返回 null）。</summary>
+    public IReadOnlyList<string>? GroupOf(string id)
+        => MergeGroups.FirstOrDefault(g => g.Contains(id, StringComparer.Ordinal));
 
     public void RefreshPresentation()
     {

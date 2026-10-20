@@ -22,6 +22,8 @@
 | **CR-50** | 日志跨午夜换文件没有单测。要测得注入时钟 | `Utils/Log.cs:EnsureWriter` | `open` |
 | **CR-52** | `ShutdownLogging` 的注释仍说没人调用 `Dispose`，实际退出路径会调 | `App.xaml.cs:ShutdownLogging` | `open` |
 | **CR-61** | 日志在锁里同步刷盘，UI 线程可能等磁盘。改缓冲会丢掉崩溃前最后几行，所以先不改 | `Utils/Log.cs:Emit` | `open` |
+| **CR-70** | 合并组共用外观的跨展示面一致性未真机验证（设备页/小组件/贴片/托盘/历史/统计六处），尤其贴片图标与历史页改名 | `Models/MergedCustomization.cs`、`HistoryPage.xaml.cs:ResolveDisplayName` | `open` |
+| **CR-71** | 已修：合并行删除/改名静默失效（组合 ID 与残留成员对不上）。修复后需真机确认那行能删掉，且重启后不复现 | `DeviceManager.cs:RemoveOfflineDevice`、`DevicesPage.xaml.cs:ResolveMemberIds` | `open` |
 
 ## 重构候选（未做）
 

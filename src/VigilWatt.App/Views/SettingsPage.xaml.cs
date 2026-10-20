@@ -22,7 +22,11 @@ namespace VigilWatt.App.Views;
 
 public sealed partial class SettingsPage : Page
 {
-    private readonly Dictionary<string, ToggleSwitch> _pluginToggles = new();
+    /// <summary>插件开关：键 = 品牌（<see cref="IBatteryPlugin.DisplayName"/>），值 = 该品牌下所有插件的开关。</summary>
+    private readonly Dictionary<string, List<ToggleSwitch>> _pluginToggles = new();
+
+    /// <summary>品牌 → 该品牌下的插件名（落盘时一个开关要写给多个插件）。</summary>
+    private readonly Dictionary<string, List<string>> _pluginNames = new();
     private readonly List<SearchEntry> _searchEntries = new();
     private bool _searchIndexBuilt;
     private DispatcherQueueTimer? _highlightTimer;
@@ -60,11 +64,12 @@ public sealed partial class SettingsPage : Page
 
         RebuildMonitorOptions();
 
-        // 插件开关动态生成：新插件（IBatteryPlugin 实现）自动出现在设置页
+        // 插件开关动态生成：新插件（IBatteryPlugin 实现）自动出现在设置页。
+        // 按品牌归组：同一品牌的不同品类（迈从鼠标 / 迈从键盘）合成一个开关，用户视角是"这个牌子开不开"
         bool first = true;
-        foreach (var plugin in App.Services.Manager.Plugins)
+        foreach (var brand in App.Services.Manager.Plugins.GroupBy(p => p.DisplayName, StringComparer.Ordinal))
         {
-            AddPluginRow(plugin, first);
+            AddPluginRow(brand.Key, brand.ToList(), first);
             first = false;
         }
     }
@@ -130,8 +135,13 @@ public sealed partial class SettingsPage : Page
         LogLevelHintText.Text = LogLevelOptions.Describe(level);
         LogRetentionBox.Value = s.LogRetentionDays;
 
-        foreach (var (name, toggle) in _pluginToggles)
-            toggle.IsOn = s.PluginEnabled.TryGetValue(name, out var on) && on;
+        // 一个品牌一个开关：任一插件开着就显示为开（与保存时的"整组同取"对称）
+        foreach (var (brand, toggles) in _pluginToggles)
+        {
+            var names = _pluginNames.TryGetValue(brand, out var list) ? list : new List<string>();
+            bool on = names.Any(n => s.PluginEnabled.TryGetValue(n, out var v) && v);
+            foreach (var toggle in toggles) toggle.IsOn = on;
+        }
     }
 
     /// <summary>按 Tag 选中下拉框条目；值对不上任何一条（配置被手改过）时保持未选中。</summary>
@@ -182,8 +192,9 @@ public sealed partial class SettingsPage : Page
     /// <summary>
     /// 按"标签左、开关右"的统一样式动态生成一行插件开关。复用 Page.Resources 里的
     /// RowTitleStyle/RowDescStyle/RowDividerStyle，让动态行与 XAML 手写行视觉完全一致。
+    /// 同一品牌的多个插件共用一个开关：任一插件原来开着，就显示为开。
     /// </summary>
-    private void AddPluginRow(IBatteryPlugin plugin, bool first)
+    private void AddPluginRow(string brand, IReadOnlyList<IBatteryPlugin> plugins, bool first)
     {
         if (!first)
             PluginPanel.Children.Add(new Border { Style = (Style)Resources["RowDividerStyle"] });
@@ -196,13 +207,18 @@ public sealed partial class SettingsPage : Page
             VerticalAlignment = VerticalAlignment.Center,
         };
 
+        // 描述里列出该品牌覆盖的品类（去重），用户能看出一个开关管了几类设备
+        var kinds = plugins.Select(p => KindText(p.Kind)).Distinct(StringComparer.Ordinal);
+        string description = string.Join(" · ", kinds);
+
         var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(new TextBlock { Text = plugin.DisplayName, Style = (Style)Resources["RowTitleStyle"] });
-        text.Children.Add(new TextBlock { Text = KindText(plugin.Kind), Style = (Style)Resources["RowDescStyle"] });
+        text.Children.Add(new TextBlock { Text = brand, Style = (Style)Resources["RowTitleStyle"] });
+        text.Children.Add(new TextBlock { Text = description, Style = (Style)Resources["RowDescStyle"] });
 
         var row = new Grid { ColumnSpacing = 16, Padding = new Thickness(0, 12, 0, 12) };
-        AutomationProperties.SetName(row, $"{plugin.DisplayName} {plugin.Name}");
-        AutomationProperties.SetHelpText(row, $"2.4G 设备插件 · {KindText(plugin.Kind)}");
+        string names = string.Join(" ", plugins.Select(p => p.Name));
+        AutomationProperties.SetName(row, $"{brand} {names}");
+        AutomationProperties.SetHelpText(row, $"2.4G 设备插件 · {description}");
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(text, 0);
@@ -211,7 +227,8 @@ public sealed partial class SettingsPage : Page
         row.Children.Add(toggle);
 
         PluginPanel.Children.Add(row);
-        _pluginToggles[plugin.Name] = toggle;
+        _pluginToggles[brand] = new List<ToggleSwitch> { toggle };
+        _pluginNames[brand] = plugins.Select(p => p.Name).ToList();
     }
 
     /// <summary>搜索索引延迟到真正需要时才建（OnPageLoaded 会先在空闲时预热一次，这里兜底）。</summary>
@@ -462,9 +479,11 @@ public sealed partial class SettingsPage : Page
         s.WindowBackdrop = (BackdropCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? WindowBackdrop.Auto;
         s.LogLevel = LogLevelNames.Normalize((LogLevelCombo.SelectedItem as ComboBoxItem)?.Tag as string);
         s.LogRetentionDays = (int)LogRetentionBox.Value;
-        foreach (var (name, toggle) in _pluginToggles)
+        // 品牌开关作用于该品牌下所有插件（迈从鼠标 + 迈从键盘）
+        foreach (var (brand, toggles) in _pluginToggles)
         {
-            s.PluginEnabled[name] = toggle.IsOn;
+            if (!_pluginNames.TryGetValue(brand, out var names)) continue;
+            foreach (var name in names) s.PluginEnabled[name] = toggles[0].IsOn;
         }
         s.Save();
 

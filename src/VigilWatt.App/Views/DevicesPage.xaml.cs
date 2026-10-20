@@ -25,6 +25,12 @@ public sealed partial class DevicesPage : Page
     /// <summary>事件是否已订阅：Loaded 可能重复触发，不挡住就会叠加回调。</summary>
     private bool _hooked;
 
+    /// <summary>同名合并提示：已经提示过的设备组合（避免每次轮询都弹）。</summary>
+    private readonly HashSet<string> _mergePrompted = new(StringComparer.Ordinal);
+
+    /// <summary>同屏只允许一个合并提示弹窗。</summary>
+    private bool _mergePromptOpen;
+
     public DevicesPage()
     {
         InitializeComponent();
@@ -82,38 +88,108 @@ public sealed partial class DevicesPage : Page
     {
         var devices = App.Services.Manager.Devices;
         var settings = App.Services.Settings;
+        var groups = App.Services.Manager.MergeGroups;
+        // 排序表只该存原始设备 ID；旧版本曾把组合 ID（a+b）写进去，留着会让多选/排序判定混乱，这里顺手清掉
+        if (settings.DeviceOrder.RemoveAll(id => id.Contains('+')) > 0) settings.Save();
+        var merged = DeviceMergeResolver.Build(devices, groups, settings.DeviceOrder,
+                                               settings.DeviceCustomizations);
 
-        string key = BuildRowsKey(devices, settings);
+        string key = BuildRowsKey(merged, settings);
         if (key != _rowsKey || DeviceList.ItemsSource == null)
         {
             _rowsKey = key;
-            DeviceList.ItemsSource = devices.Select(d => DeviceRowModel.From(d, settings)).ToList();
+            DeviceList.ItemsSource = merged.Select(d => DeviceRowModel.From(d, settings)).ToList();
         }
 
-        var online = devices.Count(d => d.IsOnline);
+        var online = merged.Count(d => d.IsOnline);
         // 带上时间戳：即使设备数据没变，用户也能一眼看出这次刷新确实跑过了
-        SummaryText.Text = $"{online} 台在线 / 共 {devices.Count} 台 · {DateTime.Now:HH:mm:ss} 更新";
+        SummaryText.Text = $"{online} 台在线 / 共 {merged.Count} 台 · {DateTime.Now:HH:mm:ss} 更新";
 
-        bool empty = devices.Count == 0;
+        bool empty = merged.Count == 0;
         DeviceList.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
         EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+
+        SuggestSameNameMerge(merged, settings);
+    }
+
+    /// <summary>
+    /// 名字相同但还没合并的设备，提示一次是否合并（用户明确要求：名字一样就直接合并）。
+    /// 每对只提示一次（进程内记忆），拒绝后不再打扰；用户改完名再刷新会重新触发。
+    /// </summary>
+    private async void SuggestSameNameMerge(IReadOnlyCollection<MergedDevice> rows, AppSettings settings)
+    {
+        if (_mergePromptOpen) return;
+
+        var candidate = rows
+            .Where(r => !r.IsMerged && r.Primary.Source != DeviceSource.System)
+            .GroupBy(r => DevicePresentation.Apply(r.Primary, settings).DisplayName.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Key.Length > 0 && g.Count() > 1)
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (candidate == null) return;
+
+        var ids = candidate.Select(r => r.Primary.Id).ToArray();
+        string promptKey = DeviceMergeResolver.GroupId(ids);
+        if (!_mergePrompted.Add(promptKey)) return;
+
+        // 让当前这一帧先画出来，再弹窗（Refresh 常在事件回调里同步跑）
+        await Task.Yield();
+        if (_mergePromptOpen) return;
+        _mergePromptOpen = true;
+        try
+        {
+            string detail = string.Join("\n", candidate.Select(r =>
+                $"· {DeviceSourceInfo.ShortLabel(r.Primary.Source)}（{(r.IsOnline ? "在线" : "离线")}）"));
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "合并为同一台设备？",
+                Content = $"检测到 {candidate.Count()} 条记录名称相同：\n\n{detail}\n\n" +
+                          "合并后只显示一行，徽标逐个标注各通道是否在线；历史曲线也会合并显示。随时可以右键拆分。",
+                PrimaryButtonText = "合并",
+                CloseButtonText = "暂不合并",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+            if (await dialog.ShowAsync() == ContentDialogResult.Primary &&
+                App.Services.Manager.MergeDevices(ids))
+            {
+                // 同名提示由"被合并"的一方接住主动方的外观：ids 按行序，先出现的那条是主动方
+                var target = ids[ids.Length - 1];
+                AdoptCustomization(App.Services.Manager.GroupOf(target) ?? ids, target);
+                App.Services.Manager.RefreshPresentation();
+                Refresh();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("同名设备合并提示失败", ex);
+        }
+        finally
+        {
+            _mergePromptOpen = false;
+        }
     }
 
     /// <summary>行内容指纹：参与显示的字段全在里面（不含"更新于"时间，否则每轮都不同）。</summary>
-    private static string BuildRowsKey(IReadOnlyCollection<DeviceStatus> devices, AppSettings settings)
+    private static string BuildRowsKey(IReadOnlyCollection<MergedDevice> devices, AppSettings settings)
     {
         var sb = new System.Text.StringBuilder(128);
         foreach (var source in devices)
         {
             var d = DevicePresentation.Apply(source, settings);
-            sb.Append(d.Id).Append('|')
+            sb.Append(source.Id).Append('|')
               .Append(d.DisplayName).Append('|')
-              .Append((int)d.Kind).Append('|')
+              .Append((int)DevicePresentation.KindOf(source, settings)).Append('|')
               .Append(d.Protocol).Append('|')
               .Append(d.BatteryPercent?.ToString() ?? "-").Append('|')
               .Append((int)d.Charging).Append('|')
-              .Append(d.IsOnline ? '1' : '0').Append('|')
-              .Append(DevicePresentation.AccentColor(source.Id, settings) is { } c ? UiPalette.ToHex(c) : "-")
+              .Append(source.IsOnline ? '1' : '0').Append('|')
+              // 每个通道的在线状态也算进指纹：合并组的徽标颜色/灰显会随它变
+              .Append(string.Join(",", source.Channels.Select(c => c.IsOnline ? '1' : '0'))).Append('|')
+              // 压制通道（蓝牙在线时的 2.4G）同样影响徽标与副标题
+              .Append(string.Join(",", source.Suppressed.Select(c => c.Id)))
+              .Append('|')
+              .Append(DevicePresentation.AccentColor(source) is { } c ? UiPalette.ToHex(c) : "-")
               .Append(';');
         }
         return sb.ToString();
@@ -123,12 +199,37 @@ public sealed partial class DevicesPage : Page
 
     private void MoveDown_Click(object sender, RoutedEventArgs e) => MoveDevice(sender, +1);
 
-    /// <summary>删除离线设备：列表条目、自定义信息、排序记录一并清掉；在线设备按钮不显示，这里再兜一次底。</summary>
+    /// <summary>删除离线设备：列表条目、自定义信息、排序记录一并清掉；在线设备按钮不显示，这里再兜一次底。
+    /// 合并组会删掉组内**所有**离线通道（组里还有在线成员时整行仍保留）。</summary>
     private void DeleteDevice_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement el || el.Tag is not string id) return;
-        if (!App.Services.Manager.RemoveOfflineDevice(id)) return;
+        var members = ResolveMemberIds(id);
+        var ids = members.Where(x => App.Services.Manager.Find(x) is { IsOnline: false }).ToList();
+        if (ids.Count == 0) return;
+        foreach (var member in ids) App.Services.Manager.RemoveOfflineDevice(member);
         Refresh();
+    }
+
+    /// <summary>
+    /// 行 ID 可能是合并组的组合 ID，拆回真实设备 ID。
+    /// 先按组合 ID 精确匹配；匹配不上再按**成员交集**回退——组里可能残留已不在列表的 ID，
+    /// 那时行的组合 ID 只由现存成员拼成，与组完整拼出来的字符串不相等（CR-71 真机复现：
+    /// 成员为空，删除/改名一律静默失效）。
+    /// </summary>
+    private static IReadOnlyList<string> ResolveMemberIds(string rowId)
+    {
+        var groups = App.Services.Manager.MergeGroups;
+        var exact = groups.FirstOrDefault(g => DeviceMergeResolver.GroupId(g) == rowId);
+        if (exact is not null) return exact.Where(x => App.Services.Manager.Find(x) != null).ToList();
+
+        // 回退：把行 ID 拆开，取与它相交的那一组（组内幽灵成员不参与拼接，因此对不上）
+        var parts = rowId.Split('+', StringSplitOptions.RemoveEmptyEntries);
+        var hit = groups.FirstOrDefault(g => g.Intersect(parts, StringComparer.Ordinal).Any());
+        var members = (hit ?? (IReadOnlyList<string>)parts)
+                      .Where(x => App.Services.Manager.Find(x) != null)
+                      .ToList();
+        return members;
     }
 
     /// <summary>手动排序：在 DeviceOrder 里移一位并落盘，然后让 Manager 广播一次，把新顺序同步到贴片/小组件/托盘。</summary>
@@ -142,15 +243,19 @@ public sealed partial class DevicesPage : Page
 
     private async void CustomizeDevice_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuFlyoutItem item || item.Tag is not string id) return;
-        var device = App.Services.Manager.Find(id);
-        if (device == null) return;
+        if (sender is not MenuFlyoutItem item || item.Tag is not string rowId) return;
+        // 行 ID 可能是合并组的组合 ID：外观是**整组共用**的，写回时摊给每个成员，
+        // 否则换通道（2.4G ↔ 蓝牙）后名称/图标就会跳回原值（见 MergedCustomization）
+        var ids = ResolveMemberIds(rowId).Where(x => App.Services.Manager.Find(x) != null).ToList();
+        if (ids.Count == 0) return;
+        var device = App.Services.Manager.Find(ids[0])!;
 
         var settings = App.Services.Settings;
-        settings.DeviceCustomizations.TryGetValue(id, out var current);
+        // 预填组内共用外观；整组都没定制过时用行上看到的显示名（不是某个成员的原始名）
+        var current = MergedCustomization.Resolve(ids, settings.DeviceCustomizations);
         var nameBox = new TextBox
         {
-            Text = current?.Name ?? device.DisplayName,
+            Text = current?.Name ?? DevicePresentation.DisplayName(device.Id, device.DisplayName, settings),
             MaxLength = 80,
             PlaceholderText = "输入设备名称",
         };
@@ -163,6 +268,7 @@ public sealed partial class DevicesPage : Page
         };
         nameBox.TextChanged += (_, _) => nameError.Visibility = Visibility.Collapsed;
 
+        // "自动"预览用组内共用的类型（合并组可能与首个成员的声明类型不同）
         var automaticKind = device.Kind == DeviceKind.Unknown
             ? DeviceKindGuesser.Guess(device.DisplayName)
             : device.Kind;
@@ -400,7 +506,7 @@ public sealed partial class DevicesPage : Page
 
         if (result == ContentDialogResult.Secondary)
         {
-            settings.DeviceCustomizations.Remove(id);
+            MergedCustomization.ApplyToGroup(ids, settings.DeviceCustomizations, null);
         }
         else
         {
@@ -409,7 +515,8 @@ public sealed partial class DevicesPage : Page
             custom.Name = name;
             custom.IconKind = selectedKind;
             custom.ColorHex = selectedColorHex;
-            settings.DeviceCustomizations[id] = custom;
+            // 合并组内所有设备跟随同一份外观；拆分后各通道也各自保留这套值
+            MergedCustomization.ApplyToGroup(ids, settings.DeviceCustomizations, custom);
         }
 
         settings.Save();
@@ -417,22 +524,130 @@ public sealed partial class DevicesPage : Page
         Refresh();
     }
 
+    /// <summary>
+    /// 合并后让外观"跟随被合并的设备"：主动方整组的外观全部让位给目标设备的那一份。
+    /// 顺序按用户语义——目标设备（"合并到"的那台）赢，主动方原有的名称/图标/颜色一律覆盖。
+    /// </summary>
+    private static void AdoptCustomization(IReadOnlyList<string> mergedGroup, string targetId)
+    {
+        var settings = App.Services.Settings;
+        var map = settings.DeviceCustomizations;
+
+        // 目标设备所在组（若它自己也已是一组）里共用的那份，才是"被合并设备"的外观
+        var targetMembers = App.Services.Manager.GroupOf(targetId) ?? new[] { targetId };
+        var source = MergedCustomization.Resolve(targetMembers, map);
+
+        // 目标自己都没定制过 ⇒ 整组统一恢复默认，不能让主动方那套残留下来
+        MergedCustomization.ApplyToGroup(mergedGroup, map,
+            MergedCustomization.HasAnyValue(source) ? source : null);
+        settings.Save();
+    }
+
     private void DeviceRow_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        if (sender is not FrameworkElement row || row.DataContext is not DeviceRowModel model) return;
-        var device = App.Services.Manager.Find(model.Id);
-        if (device == null) return;
+        // 别用 row.DataContext 强转：命中的可能是模板里的子元素，指针落在 Border 留白或
+        // Grid 空白区时拿不到行模型，右键就"没反应"。以元素自身（含祖先）为准。
+        if (sender is not FrameworkElement row || RowModelOf(row) is not { } model) return;
+        var members = ResolveMemberIds(model.Id);
+        if (App.Services.Manager.Find(members[0]) == null) return;
 
         var menu = new MenuFlyout();
-        menu.Items.Add(new MenuFlyoutItem
+
+        // 合并 / 拆分：同一台物理设备的 2.4G 与蓝牙通道合到一行
+        if (model.IsMerged)
+        {
+            var split = new MenuFlyoutItem { Text = "拆分此设备（恢复成多行）", Tag = model.Id };
+            split.Click += SplitDevice_Click;
+            menu.Items.Add(split);
+        }
+        else
+        {
+            var settings = App.Services.Settings;
+            // 已在别的合并组里的设备不再作为合并候选：它们已经在列表里以一行显示，
+            // 再列出来会让人以为还没合并（也与"合并过就只显示一个"的预期冲突）
+            var groups = App.Services.Manager.MergeGroups;
+            var others = App.Services.Manager.Devices
+                .Where(d => !members.Contains(d.Id) && !groups.Any(g => g.Contains(d.Id, StringComparer.Ordinal)))
+                .ToList();
+            if (others.Count > 0)
+            {
+                var merge = new MenuFlyoutSubItem { Text = "合并到其他设备…" };
+                foreach (var other in others)
+                {
+                    // 必须用**用户改过的名字**：设备原始名可能是同一串型号（两只 MCHOSE G3 A、两串 MAC），
+                    // 只显示原名分不清谁是谁
+                    var item = new MenuFlyoutItem
+                    {
+                        Text = $"{DevicePresentation.DisplayName(other.Id, other.DisplayName, settings)}" +
+                               $"（{DeviceSourceInfo.ShortLabel(other.Source)}）{(other.IsOnline ? "" : " · 离线")}",
+                        Tag = new[] { members[0], other.Id },
+                    };
+                    item.Click += MergeDevice_Click;
+                    merge.Items.Add(item);
+                }
+                menu.Items.Add(merge);
+            }
+        }
+
+        var customize = new MenuFlyoutItem
         {
             Text = "自定义图标、名称和颜色",
-            Tag = model.Id,
-        });
-        var item = (MenuFlyoutItem)menu.Items[0];
-        item.Click += CustomizeDevice_Click;
+            Tag = model.Id,   // 行 ID：合并组要写进组内实际成员，见 CustomizeDevice_Click
+        };
+        customize.Click += CustomizeDevice_Click;
+        menu.Items.Add(customize);
+
         menu.ShowAt(row, new FlyoutShowOptions { Position = e.GetPosition(row) });
         e.Handled = true;
+    }
+
+    /// <summary>沿可视树向上找一个带 <see cref="DeviceRowModel"/> 的元素（右键命中的往往是模板子元素）。</summary>
+    private static DeviceRowModel? RowModelOf(DependencyObject start)
+    {
+        for (var node = start; node != null; node = VisualTreeHelper.GetParent(node))
+            if (node is FrameworkElement { DataContext: DeviceRowModel model }) return model;
+        return null;
+    }
+
+    /// <summary>把本行合并到用户选中的另一台设备。</summary>
+    private async void MergeDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem item || item.Tag is not string[] ids || ids.Length < 2) return;
+
+        var a = App.Services.Manager.Find(ids[0]);
+        var b = App.Services.Manager.Find(ids[1]);
+        if (a == null || b == null) return;
+
+        var settings = App.Services.Settings;
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "合并设备",
+            Content = $"将以下两条记录合并为一台设备？\n\n" +
+                      $"· {DevicePresentation.DisplayName(a.Id, a.DisplayName, settings)}（{DeviceSourceInfo.ShortLabel(a.Source)}）\n" +
+                      $"· {DevicePresentation.DisplayName(b.Id, b.DisplayName, settings)}（{DeviceSourceInfo.ShortLabel(b.Source)}）\n\n" +
+                      "合并后只显示一行，徽标逐个标注各通道是否在线；历史曲线也会合并显示。随时可以拆分。",
+            PrimaryButtonText = "合并",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        // ids[1] 是用户选中的"合并到"目标设备：合并后整组外观跟随它
+        var target = ids[ids.Length - 1];
+        if (App.Services.Manager.MergeDevices(ids))
+        {
+            var group = App.Services.Manager.GroupOf(target) ?? ids;
+            AdoptCustomization(group, target);
+            App.Services.Manager.RefreshPresentation();
+            Refresh();
+        }
+    }
+
+    private void SplitDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem item || item.Tag is not string rowId) return;
+        if (App.Services.Manager.SplitDevice(ResolveMemberIds(rowId))) Refresh();
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)

@@ -6,15 +6,17 @@
 
 ## 1. 当前状态
 
-当前版本 **1.2.1**（GitHub Release 提供便携 zip；`dist/` 里 1.2.0 为本机试装用；正式线上以 GitHub 最新 Release 为准，Gitee 是回退源）。更新源：GitHub 优先、8 秒不通回退 Gitee（**尚未发版**，1.2.0 及以前只走 Gitee）。发新版时留着上一版 `*-full.nupkg`，才会有 delta；两个仓库都要传同一份资产，规则见 `dev/build.md` §8。
+当前版本 **1.2.2**（本机便携 zip，未发版；`dist/` 里 1.2.0 为本机试装用；正式线上以 GitHub Release 1.2.1 为准，Gitee 是回退源）。更新源：GitHub 优先、8 秒不通回退 Gitee（**尚未发版**，1.2.0 及以前只走 Gitee）。发新版时留着上一版 `*-full.nupkg`，才会有 delta；两个仓库都要传同一份资产，规则见 `dev/build.md` §8。
 
-本机已打通：迈从 G87（0x13）、雷柏 VT3（status-report7，纯被动）、北通 T9（被动流）、经典蓝牙耳机（HFP 网关节点 `DEVPKEY_Device_BatteryLevel`）。罗技 Bolt 接收器（C548）+ MX Master 3S 已真机验证。本机电量可选，默认关。弱水时砂 2.4G 无电量通道，不再投入。
+本机已打通：迈从 G87（0x13）、迈从 G3 A（纯被动 `AA FA AE`，零写入）、雷柏 VT3（status-report7，纯被动）、北通 T9（被动流）、经典蓝牙耳机（HFP 网关节点 `DEVPKEY_Device_BatteryLevel`）。罗技 Bolt 接收器（C548）+ MX Master 3S 已真机验证。本机电量可选，默认关。弱水时砂 2.4G 无电量通道，不再投入。
 
 任务栏贴片是原生子窗口 `Services/TaskbarPillWindow.cs`（`SetParent` 进任务栏），不是 WinUI 覆盖窗。现由 `Services/TaskbarPillManager.cs` 按设置选屏：只贴主屏或指定副屏（`Shell_SecondaryTrayWnd`），支持 1–6 台设备单行/两行排布，拖动位置记忆。小组件仍用 `TransparentWindowSurface`；Win10 上因此没有 DWM 投影（BACKLOG **CR-57**，未做）。旧覆盖窗的白框、裁字、抢 Z 序在新贴片上已不存在。原理见 `dev/runtime-pitfalls.md` §16；§17 只对小组件。
 
 页面缓存：设备页、设置页、关于页 `Required`；历史页、统计页改为 `Disabled`（离开即释放，降低常驻视觉树）。订阅跟 `Loaded`/`Unloaded`，注意关于页在构造函数里订阅静态事件且无解绑路径，必须保持常驻。设置页可搜索。日志按日：`logs\app-日期.log`。插件开关即写入授权，没有第二套「写入许可」。
 
 设备列表支持右键自定义名称、图标与强调色（16 色预设），支持上移/下移排序与删除离线设备；顺序持久化在 `DeviceOrder`，删除记录在 `HiddenDeviceIds`（防止历史记录复活），按设备 ID 持久化。更新方式三档（自动/仅通知/禁用）在关于页，存 `AppSettings.UpdateMode`。
+
+**同一物理设备的多通道合并**：一只设备同时有 2.4G 与蓝牙时，两条记录可合并成一行（`AppSettings.DeviceMergeGroups`，组合 ID = 成员 ID 排序后以 `+` 连接）。纯逻辑在 `Models/DeviceMergeResolver.cs`，历史聚合在同名入口 `Storage/HistoryMergeResolver.cs`。设备页、小组件、任务栏贴片、托盘、历史页、统计曲线共六个展示面都只读这一个视图。规则：电量/名称取第一个在线通道，任一通道在线即整行在线，徽标逐通道标注（离线灰）；**组内有在线蓝牙时 2.4G 通道被压制**（`MergedDevice.Suppressed`，灰徽标 + 副标题「已切走，不采信」），不参与取值；**外观（名称/图标/颜色）整组共用一份**（`MergedCustomization`）：合并时以「合并到」的目标设备为准覆盖主动方，之后每次编辑都摊给组内所有成员，换通道不跳；同名设备自动弹一次合并提示，右键可拆分。共用的强调色入口是 `UiPalette.Accent`（离线灰 → 自定义色 → 电量状态色）。
 
 审查标准在 `docs/dev/review-standard.md`，未修项全集在 `docs/reviews/BACKLOG.md`（不要在本文再抄一份）。
 
@@ -25,6 +27,8 @@
 | 设备 | 通道 | 状态 |
 |---|---|---|
 | 迈从 G87（VID_41E4&PID_2001） | 0x13 会话 | 已打通 |
+| 迈从 G3 A（VID_A8A5&PID_2255） | `mi_02` 纯被动 `AA FA AE` | 已打通，零写入；只在开机时推一帧，故全程不判离线（protocols.md §7） |
+| 英菲克 M1 Pro（蓝牙通道） | BLE GATT | 已读数；其 2.4G 接收器是 `1EA7:0064`，静默不推帧，待抓包（protocols.md §8） |
 | 罗技 Bolt（C548 + MX Master 3S） | HID++ | 已真机验证 |
 | 雷柏 VT3 二代（VID_24AE&PID_1412） | status-report7 被动心跳 | 已打通，零写入。雷柏不是 HID++，勿让 Logitech 插件认领 |
 | 英菲克 ZHEN（VID_1D57&PID_FA65） | report 0x03 被动状态帧 | 已打通，零写入；放电 `0x01` / 充电 `0x03` 已校准（protocols.md §6） |
@@ -47,11 +51,12 @@
 3. **迈从 QHW**（3837:3033）已实现，遇到再验证。
 4. **北通鲲鹏20**（PID_5191）主动查询未真机验证。T9 的 `byte23` 低位仍只认 `0x50` = 未连接；验证方法见 protocols.md §4.4.1。
 5. **贴片人手复看**：副屏选屏与拖动记忆（在副屏 DPI 不同、任务栏自动隐藏、竖向任务栏下各看一眼）、深色对比（CR-42）、是否压住任务栏按钮（CR-39）、右键菜单（CR-58/CR-60）、悬停设备名（多台/两行/底栏/深色任务栏）。分辨率往返已于 2026-10-13 通过。Win10 小组件投影（CR-57）等用户决定是否做。
-6. **小组件未跟随自定义颜色**：设备页/贴片已用统一强调色，小组件仍按电量状态色；要统一时改 `WidgetWindow` 的取色路径。
+6. **英菲克 M1 Pro 的 2.4G**：接收器 `1EA7:0064`（产品名 `2.4G Mouse`）只暴露 vendor `0xFFB5`（in/out 各 8 字节）与标准鼠标通道（被系统独占）。vendor 通道可只读打开但**不主动推帧**，被动路径走不通。下一步需 USBPcap：`sc config USBPcap start= system` 后**重启**，才有 `\\.\USBPcapN` 节点，再用 `scripts/capture-usb.ps1` 抓主机查询帧。勿盲发帧（safety.md）。
 7. **CR-53 真机**：迈从键盘睡够 3 分钟再唤醒，日志应在 1 分钟内出现重新上线。表在 `Plugins/WriteBackoff.cs`。
 8. **页面缓存真机**：来回切换是否变快、离开再回来数据是否仍刷新、设置值是否与 `settings.json` 一致、搜索是否仍可用。坑见 `dev/runtime-pitfalls.md` §19。相关未修项 CR-61 / CR-62 / CR-63。
 9. **启动更新确认框**：本轮只验到"托盘气泡 + 日志发现新版本"（`StartMinimized=true`，窗口没开）。打开主窗口应弹「发现新版本」确认框，未真机确认。
 10. **Win11 26200 复核**：本机已升到 26200（见 §1），CR-57（小组件自绘投影）等基于 Win10 的结论需按新系统重判；任务栏贴片在 Win11 上的表现（CR-39/41/42/48）也值得重看。
+11. **迈从 `3554:FA07` 误认领**：G75 Pro 的 dongle 多出一条无产品名的 vendor 接口，被 `MchosePlugin`（无 VID 白名单）当成独立键盘。短期靠手动合并；长期需给它加 VID 白名单（待日志确认接口形态，见 protocols.md §1.6）。
 
 ## 5. 给下一个 AI 的注意事项
 

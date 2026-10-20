@@ -35,20 +35,41 @@
                 <DataTemplate x:DataType="v:DeviceRowModel">
                     <Border Style="{StaticResource AppCardStyle}"
                             Padding="16,12"
-                            Margin="0,0,0,8"
-                            RightTapped="DeviceRow_RightTapped">
-                        <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="14">
+                            Margin="0,0,0,8">
+                        <!-- 右键挂在最内层满铺的 Grid 上：Border 本身没有背景命中测试，点在子元素上时
+                             事件不会冒泡到 Border，表现为"有的设备右键没反应" -->
+                        <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="14"
+                              Background="Transparent"
+                              RightTapped="DeviceRow_RightTapped">
                             <FontIcon Grid.Column="0" FontSize="22" Glyph="{x:Bind IconGlyph}" />
                             <StackPanel Grid.Column="1" Spacing="6">
                                 <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                                     <TextBlock Text="{x:Bind Name}" FontSize="15" FontWeight="SemiBold"
                                                Foreground="{x:Bind NameBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                    <Border Grid.Column="1" CornerRadius="4" Padding="6,2" VerticalAlignment="Center"
-                                            Background="{x:Bind SourceBackgroundBrush}">
-                                        <TextBlock Text="{x:Bind SourceText}" FontSize="10" FontWeight="SemiBold"
-                                                   Foreground="{x:Bind SourceBrush}" />
-                                    </Border>
+                                    <!-- 通道徽标：单通道一个；合并组为「2.4G / 蓝牙」，离线通道显示灰色 -->
+                                    <ItemsControl Grid.Column="1" ItemsSource="{x:Bind Badges}"
+                                                  VerticalAlignment="Center">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal" Spacing="4" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="v:ChannelBadge">
+                                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                                    <TextBlock Text="{x:Bind Separator}" FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                                    <Border CornerRadius="4" Padding="6,2"
+                                                            Background="{x:Bind BackgroundBrush}">
+                                                        <TextBlock Text="{x:Bind Text}" FontSize="10" FontWeight="SemiBold"
+                                                                   Foreground="{x:Bind TextBrush}" />
+                                                    </Border>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                     <TextBlock Grid.Column="2" Text="⚡" FontSize="13" VerticalAlignment="Center"
                                                Foreground="{x:Bind ProgressBrush}"
                                                Visibility="{x:Bind IsCharging}" />
@@ -64,15 +85,17 @@
                             <!-- 手动排序：仅在线设备显示；顺序影响设备页/小组件/任务栏贴片 -->
                             <StackPanel Grid.Column="3" Orientation="Vertical" Spacing="2"
                                         VerticalAlignment="Center"
-                                        Visibility="{x:Bind IsOnline}">
+                                        Visibility="{x:Bind OnlineVisibility, Mode=OneTime}">
                                 <Button Padding="4,0" MinWidth="0" MinHeight="0" Background="Transparent"
                                         BorderThickness="0" Tag="{x:Bind Id}"
-                                        Click="MoveUp_Click" ToolTipService.ToolTip="上移">
+                                        Click="MoveUp_Click" ToolTipService.ToolTip="上移"
+                                        Visibility="{x:Bind OnlineVisibility, Mode=OneTime}">
                                     <FontIcon Glyph="&#xE70E;" FontSize="12" />
                                 </Button>
                                 <Button Padding="4,0" MinWidth="0" MinHeight="0" Background="Transparent"
                                         BorderThickness="0" Tag="{x:Bind Id}"
-                                        Click="MoveDown_Click" ToolTipService.ToolTip="下移">
+                                        Click="MoveDown_Click" ToolTipService.ToolTip="下移"
+                                        Visibility="{x:Bind OnlineVisibility, Mode=OneTime}">
                                     <FontIcon Glyph="&#xE70D;" FontSize="12" />
                                 </Button>
                             </StackPanel>
@@ -80,7 +103,7 @@
                             <Button Grid.Column="3" Padding="6" MinWidth="0" MinHeight="0"
                                     Background="Transparent" BorderThickness="0" Tag="{x:Bind Id}"
                                     VerticalAlignment="Center"
-                                    Visibility="{x:Bind IsOffline}"
+                                    Visibility="{x:Bind OfflineVisibility, Mode=OneTime}"
                                     Click="DeleteDevice_Click" ToolTipService.ToolTip="删除此设备（仅离线）">
                                 <FontIcon Glyph="&#xE74D;" FontSize="15" />
                             </Button>

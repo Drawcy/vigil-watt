@@ -391,7 +391,11 @@ public sealed class TaskbarPillWindow : IDisposable
             RepositionTipIfStillHovering();
     }
 
-    /// <summary>自定义颜色表（设备 Id → GDI 颜色）；未设置或格式坏的设备不进来，绘制时回落到电量状态色。</summary>
+    /// <summary>
+    /// 自定义颜色表（设备 Id → GDI 颜色）；未设置或格式坏的设备不进来，绘制时回落到电量状态色。
+    /// 合并组的颜色由 <see cref="DevicePresentation.Apply(MergedDevice, AppSettings)"/> 统一摊到代表通道上，
+    /// 这里只按单设备取值即可，不再自行合并（避免与设备页口径不一致）。
+    /// </summary>
     private static Dictionary<string, Gdi.Color> CustomAccentColors()
     {
         var dict = new Dictionary<string, Gdi.Color>(StringComparer.Ordinal);
@@ -412,8 +416,10 @@ public sealed class TaskbarPillWindow : IDisposable
     {
         overflowNames = Array.Empty<string>();
         bool includeSystem = App.Services.Settings.MonitorSystemBattery;
-        var all = App.Services.Manager.Devices
-            .Where(d => d.IsOnline && (includeSystem || d.Source != DeviceSource.System))
+        var all = DeviceMergeResolver.Build(App.Services.Manager.Devices, App.Services.Manager.MergeGroups,
+                                            App.Services.Settings.DeviceOrder,
+                                            App.Services.Settings.DeviceCustomizations)
+            .Where(d => d.IsOnline && (includeSystem || d.Primary.Source != DeviceSource.System))
             .Select(d => DevicePresentation.Apply(d, App.Services.Settings))
             .ToList();
 

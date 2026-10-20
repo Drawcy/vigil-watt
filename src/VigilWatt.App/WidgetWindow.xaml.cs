@@ -1,4 +1,5 @@
 using VigilWatt.App.Services;
+using VigilWatt.App.ViewModels;
 using VigilWatt.Core.Models;
 using VigilWatt.Core.Utils;
 using Microsoft.UI.Windowing;
@@ -168,12 +169,11 @@ public sealed partial class WidgetWindow : Window
         var skin = SkinFor(Root.ActualTheme);
 
         // 低电量优先：充电中/已满的排末尾，未知电量殿后，同级按名称保持稳定
-        var devices = App.Services.Manager.Devices
+        // 合并组按一台设备显示（取在线通道的代表值），避免同一只鼠标出现两次
+        var devices = DeviceMergeResolver.Build(App.Services.Manager.Devices, App.Services.Manager.MergeGroups,
+                                                App.Services.Settings.DeviceOrder,
+                                                App.Services.Settings.DeviceCustomizations)
             .Where(d => d.IsOnline)
-            .Select(d => DevicePresentation.Apply(d, App.Services.Settings))
-            .OrderBy(d => DeviceStatusFormatter.IsChargingOrFull(d.Charging))
-            .ThenBy(d => d.BatteryPercent ?? 999)
-            .ThenBy(d => d.DisplayName)
             .ToList();
 
         if (devices.Count == 0)
@@ -196,7 +196,7 @@ public sealed partial class WidgetWindow : Window
         double nameW = 0, rowW = 0;
         foreach (var d in devices)
         {
-            double w = Math.Min(EstimateNameWidth(d.DisplayName), NameMaxWidth);
+            double w = Math.Min(EstimateNameWidth(mergedName(d)), NameMaxWidth);
             if (w > nameW) nameW = w;
         }
         foreach (var d in devices)
@@ -204,7 +204,7 @@ public sealed partial class WidgetWindow : Window
             // 充电行比放电行多一列 ⚡（列宽 + 该列两侧间距）；放电行的 ⚡ 列放空串，只占列间距。
             // 来源徽标（蓝牙/2.4G/本机）所有行恒定存在。
             double chargeW = DeviceStatusFormatter.IsCharging(d.Charging) ? ChargeMarkWidth : 0;
-            double w = IconSize + IconGap + nameW + 10 + SourceTagWidth(d.Source) + 10 + chargeW + 10 + PercentWidth(d);
+            double w = IconSize + IconGap + nameW + 10 + SourceTagWidth(d.Channels[0].Source) + 10 + chargeW + 10 + PercentWidth(d);
             if (w > rowW) rowW = w;
         }
 
@@ -284,7 +284,7 @@ public sealed partial class WidgetWindow : Window
     }
 
     /// <summary>16 号加粗下百分比文本的近似宽度（偏宽松：估小了会被窗口右缘裁掉）。</summary>
-    private static double PercentWidth(DeviceStatus d) =>
+    private static double PercentWidth(MergedDevice d) =>
         d.BatteryPercent.HasValue ? $"{d.BatteryPercent}%".Length * 11 : 22;
 
     /// <summary>来源徽标近似宽度（10 号字 + 左右内边距）：CJK≈10px、ASCII≈6px，偏宽松留余量。</summary>
@@ -295,12 +295,22 @@ public sealed partial class WidgetWindow : Window
         return w;
     }
 
-    private static UIElement BuildRow(DeviceStatus d, double width, Skin skin)
+    private static string mergedName(MergedDevice d) =>
+        DevicePresentation.DisplayName(d, App.Services.Settings);
+
+    private static UIElement BuildRow(MergedDevice merged, double width, Skin skin)
     {
-        var percent = d.BatteryPercent;
-        var charging = DeviceStatusFormatter.IsCharging(d.Charging);
-        // 进度条与百分比数字共用这一个状态色，两者永远同色（>50% 绿 / ≤50% 琥珀 / ≤20% 红 / 充电蓝）
-        var stateColor = UiPalette.BatteryLevel(percent, charging);
+        var settings = App.Services.Settings;
+        var primary = merged.Primary;
+        // 名称/图标/颜色同源：都取组级共用外观，换通道时不跳
+        var d = DevicePresentation.Apply(merged, settings);
+        var percent = merged.BatteryPercent;
+        var charging = DeviceStatusFormatter.IsCharging(merged.Charging);
+        // 与设备页同一入口取强调色：离线灰 / 自定义色 / 主题前景色（低电红）。三处展示面颜色因此必然一致
+        var accent = UiPalette.Accent(percent, charging, merged.IsOnline,
+                                      DevicePresentation.AccentColor(merged),
+                                      UiPalette.FromResource("TextFillColorPrimaryBrush"));
+        var stateColor = new SolidColorBrush(accent);
 
         var row = new StackPanel { Spacing = RowInnerGap, Width = width };
 
@@ -313,7 +323,8 @@ public sealed partial class WidgetWindow : Window
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        line.Children.Add(DeviceIconFactory.Boxed(d.Kind, skin.IconFill, skin.IconStroke, IconSize));
+        line.Children.Add(DeviceIconFactory.Boxed(
+            DevicePresentation.KindOf(merged, settings), skin.IconFill, skin.IconStroke, IconSize));
 
         var name = new TextBlock
         {
@@ -327,20 +338,36 @@ public sealed partial class WidgetWindow : Window
         Grid.SetColumn(name, 1);
         line.Children.Add(name);
 
-        // 来源徽标：与设备列表页同款彩色胶囊（蓝牙蓝 / 2.4G 紫 / 本机青）
-        var sourceTag = BuildSourceTag(d.Source);
-        Grid.SetColumn(sourceTag, 2);
-        line.Children.Add(sourceTag);
+        // 来源徽标：与设备列表页同款彩色胶囊；合并组为「2.4G / 蓝牙」，离线通道灰显。
+        // 同一来源只留一个（一个 dongle 可能被认成两条 2.4G 接口），在线状态取该来源任一在线。
+        var badges = merged.Channels.GroupBy(c => c.Source)
+                                    .Select(g => (Source: g.Key, Online: g.Any(c => c.IsOnline)))
+                                    .ToList();
+        var badgePanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        for (int index = 0; index < badges.Count; index++)
+        {
+            if (merged.IsMerged && index > 0)
+                badgePanel.Children.Add(new TextBlock
+                {
+                    Text = "/",
+                    FontSize = TagFontSize,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = new SolidColorBrush(skin.Text) { Opacity = 0.45 },
+                });
+            badgePanel.Children.Add(BuildSourceTag(badges[index].Source, badges[index].Online));
+        }
+        Grid.SetColumn(badgePanel, 2);
+        line.Children.Add(badgePanel);
 
         // 充电标识：与设备列表页同款 ⚡（列表页由 Visibility 绑定 IsCharging 控制显隐；
-        // 这里用空串占位，既保持五列结构对齐，又让 ⚡ 用与百分比/进度条相同的充电蓝色）
+        // 这里用空串占位，既保持五列结构对齐，又让 ⚡ 用与百分比/进度条相同的强调色）
         var chargeMark = new TextBlock
         {
             Text = charging ? "⚡" : "",
             FontSize = 13,
             Height = LineHeight,
             VerticalAlignment = VerticalAlignment.Center,
-            Foreground = new SolidColorBrush(stateColor),
+            Foreground = stateColor,
         };
         Grid.SetColumn(chargeMark, 3);
         line.Children.Add(chargeMark);
@@ -350,7 +377,7 @@ public sealed partial class WidgetWindow : Window
             Text = percent.HasValue ? $"{percent}%" : "--",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(stateColor),
+            Foreground = stateColor,
             VerticalAlignment = VerticalAlignment.Center,
         };
         Grid.SetColumn(percentText, 4);
@@ -370,7 +397,7 @@ public sealed partial class WidgetWindow : Window
             Width = width * Math.Clamp(percent ?? 0, 0, 100) / 100.0,
             HorizontalAlignment = HorizontalAlignment.Left,
             CornerRadius = new CornerRadius(BarHeight / 2),
-            Background = new SolidColorBrush(stateColor),
+            Background = stateColor,
         });
         row.Children.Add(track);
         return row;
@@ -381,9 +408,9 @@ public sealed partial class WidgetWindow : Window
     /// 颜色走 <see cref="UiPalette.SourceTag"/> 固定值、不走 ThemeResource——
     /// 本方法在 DispatcherQueue 回调路径上跑，查 Resources 抛异常会直接 fail-fast（同 <see cref="Skin"/> 的理由）。
     /// </summary>
-    private static FrameworkElement BuildSourceTag(DeviceSource source)
+    private static FrameworkElement BuildSourceTag(DeviceSource source, bool online)
     {
-        var color = UiPalette.SourceTag(source);
+        var color = online ? UiPalette.SourceTag(source) : UiPalette.Offline;
         return new Border
         {
             CornerRadius = new CornerRadius(4),

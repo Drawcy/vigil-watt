@@ -1,5 +1,7 @@
 using VigilWatt.App.ViewModels;
 using VigilWatt.App.Services;
+using VigilWatt.Core.Models;
+using VigilWatt.Core.Storage;
 using VigilWatt.Core.Utils;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -30,6 +32,18 @@ public sealed partial class HistoryPage : Page
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await ReloadAsync();
 
+    /// <summary>
+    /// 历史行的显示名：合并组按组内共用外观取名（与设备页一致）；单设备按自身外观；
+    /// 外观里没设名字时回落到历史记录里的名字（那是采样当时的名称）。
+    /// </summary>
+    private static string ResolveDisplayName(DeviceHistoryStat stat, IReadOnlyList<IReadOnlyList<string>> groups)
+    {
+        var settings = App.Services.Settings;
+        var members = HistoryMergeResolver.ExpandIds(stat.DeviceId, groups);
+        var custom = MergedCustomization.Resolve(members, settings.DeviceCustomizations);
+        return !string.IsNullOrWhiteSpace(custom?.Name) ? custom!.Name! : stat.Name;
+    }
+
     /// <summary>查询放到线程池：UI 线程同步跑 SQLite 全表统计会卡住界面（S5 / CR-06）。</summary>
     private async Task ReloadAsync()
     {
@@ -40,13 +54,17 @@ public sealed partial class HistoryPage : Page
             var history = App.Services.History;
             var (stats, devices) = await Task.Run(() => (history.GetStats(), history.GetDeviceStats()));
 
+            // 合并组折叠成一台：2.4G 与蓝牙的历史合在一起看
+            var groups = App.Services.Manager.MergeGroups;
+            var mergedCount = HistoryMergeResolver.Merge(devices, groups).Count;
+
             SubtitleText.Text = stats.TotalCount == 0
                 ? "暂无历史数据"
-                : $"共 {stats.TotalCount:N0} 条记录 · 覆盖 {stats.DeviceCount} 台设备 · {DateTime.Now:HH:mm:ss} 更新";
+                : $"共 {stats.TotalCount:N0} 条记录 · 覆盖 {mergedCount} 台设备 · {DateTime.Now:HH:mm:ss} 更新";
 
             KpiFileSize.Text = ByteSize.Format(stats.FileBytes);
             KpiTotal.Text = $"{stats.TotalCount:N0}";
-            KpiDevices.Text = $"{stats.DeviceCount}";
+            KpiDevices.Text = $"{mergedCount}";
             if (stats.First is { } first)
             {
                 KpiEarliest.Text = first.LocalDateTime.ToString("MM-dd");
@@ -58,9 +76,12 @@ public sealed partial class HistoryPage : Page
                 KpiEarliestSub.Text = "—";
             }
 
-            var newRows = devices.Select(d => HistoryDeviceRow.From(d with
+            var grouped = HistoryMergeResolver.Merge(devices, groups);
+            // 名称按**合并组的组合 ID** 查不到外观键，必须展开成成员 ID 再取组内共用外观，
+            // 否则用户改名后历史页仍显示旧名（历史里的名字是采样当时的）
+            var newRows = grouped.Select(d => HistoryDeviceRow.From(d with
             {
-                Name = DevicePresentation.DisplayName(d.DeviceId, d.Name, App.Services.Settings),
+                Name = ResolveDisplayName(d, groups),
             })).ToList();
             string key = string.Join(";", newRows.Select(r =>
                 $"{r.DeviceId}|{r.Name}|{r.Count}|{r.First.UtcTicks}|{r.Last.UtcTicks}"));
@@ -142,10 +163,16 @@ public sealed partial class HistoryPage : Page
         {
             var history = App.Services.History;
             long before = history.FileBytes();
+            // 合并组的行是组合 ID，库里存的是各通道自己的 device_id —— 必须逐个展开，
+            // 否则 DELETE 匹配不到任何行（用户会看到"删了 0 条"）。
+            var groups = App.Services.Manager.MergeGroups;
+            var ids = rows.SelectMany(r => HistoryMergeResolver.ExpandIds(r.DeviceId, groups))
+                          .Distinct(StringComparer.Ordinal)
+                          .ToList();
             // 删除 + VACUUM 都是全表级操作，放线程池（VACUUM 尤其重，同步跑会明显卡 UI）
             var (deleted, after) = await Task.Run(() =>
             {
-                int d = history.DeleteDevices(rows.Select(r => r.DeviceId).ToList());
+                int d = history.DeleteDevices(ids);
                 history.Compact();   // DELETE 不还空间，必须 VACUUM 才能把文件缩回去
                 return (d, history.FileBytes());
             });

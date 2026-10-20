@@ -70,6 +70,7 @@ public class AppSettings
         ["Rapoo"] = true,     // 雷柏走纯被动心跳读取，零写入，默认开启
         ["Betop"] = true,     // 北通手柄：发官方同款只读状态查询（cmd=0x5），默认开启
         ["Inphic"] = true,    // 英菲克 report 0x03 被动监听，不发送任何帧
+        ["G3a"] = true,       // 迈从 G3A 鼠标 `AA FA AE` 被动帧，不发送任何帧
     };
 
     /// <summary>是否把本机（笔记本）电池也纳入监控。默认关闭——它是"另一类设备"，不像外设那样需要盯着，用户明确要时才开（见设置页「监控本机电量」）。
@@ -77,6 +78,13 @@ public class AppSettings
     public bool MonitorSystemBattery { get; set; } = false;
 
     public Dictionary<string, DeviceCustomization> DeviceCustomizations { get; set; } = new();
+
+    /// <summary>
+    /// 合并组：每个子列表是一台物理设备的多个通道 ID（如 2.4G 的 <c>g3a:xxxx</c> + 蓝牙的 <c>ble:...</c>）。
+    /// 同组设备在列表/贴片/小组件/历史里都显示为一行，徽标逐个标注通道在线状态。
+    /// 每组至少 2 个 ID，规范由 <see cref="DeviceMergeResolver.Normalize"/> 负责。
+    /// </summary>
+    public List<List<string>> DeviceMergeGroups { get; set; } = new();
 
     /// <summary>设备显示顺序（Id 列表）。新设备默认排最后；不在列表里的 Id（被拔掉的设备）保留以便回来后位置不变。</summary>
     public List<string> DeviceOrder { get; set; } = new();
@@ -122,6 +130,7 @@ public class AppSettings
 
             _cached = loaded ?? new AppSettings();
             _cached.DeviceCustomizations ??= new Dictionary<string, DeviceCustomization>();
+            _cached.DeviceMergeGroups ??= new List<List<string>>();
             _cached.DeviceOrder ??= new List<string>();
             _cached.HiddenDeviceIds ??= new List<string>();
 

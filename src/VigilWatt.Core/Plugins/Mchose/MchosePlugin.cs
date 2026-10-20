@@ -67,6 +67,9 @@ public sealed class MchosePlugin : BatteryPluginBase
         if (info.VendorId == Betop.BetopPlugin.BetopVid) return false;
         // 英菲克接收器也暴露 64 字节 vendor 输出接口；避免误发迈从会话/查询帧
         if (info.VendorId == Inphic.InphicPlugin.InphicVid) return false;
+        // 迈从 G3A 鼠标的 mi_02 是 65/65，同样满足下面的 QHW 长度条件；但它只认 AA FA 前缀的被动帧，
+        // 由 G3aPlugin 负责（见 protocols.md §7）。放进来会给鼠标发 QHW 会话帧。
+        if (info.VendorId == G3a.G3aPlugin.MchoseVid && info.ProductId == G3a.G3aPlugin.G3aPid) return false;
         // consumer/system/标准键盘接口即使产品名含 MCHOSE 也不是配置通道，必须是 vendor 用法 + ≥20/20 的 I/O
         bool vendor = info.UsagePage >= 0xFF00 || info.Usage >= 0xFF00;
         if (!vendor) return false;

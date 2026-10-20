@@ -90,6 +90,32 @@ public static class UiPalette
 
     public static SolidColorBrush Brush(Color color) => new(color);
 
+    /// <summary>
+    /// 取主题色资源（如 <c>TextFillColorPrimaryBrush</c>）的 RGB。找不到时回落到中灰，
+    /// **不要用 Color.Black 兜底**：深色主题下会变成看不见的黑字。
+    /// </summary>
+    public static Color FromResource(string key)
+    {
+        if (Microsoft.UI.Xaml.Application.Current?.Resources.TryGetValue(key, out var value) == true
+            && value is SolidColorBrush brush)
+            return brush.Color;
+        return FromRgb(0x20, 0x20, 0x20);
+    }
+
+    /// <summary>
+    /// 设备强调色（名称 / 百分比 / 电量条共用，设备页与小组件同口径）：
+    /// 离线灰 → 用户自定义色 → **主题前景色**（不满电不染绿/蓝，与任务栏贴片一致）。
+    /// 三处展示面必须只走这一个入口，否则颜色会不一致。
+    /// <para><paramref name="text"/> 是明暗主题下的前景色，由调用方从主题资源取（这里不能碰 XAML 资源）。</para>
+    /// </summary>
+    public static Color Accent(int? percent, bool charging, bool online, Color? custom, Color text)
+    {
+        if (!online) return Offline;
+        if (custom is { } c) return c;
+        // 低电是唯一需要"染色"的状态（≤20% 红），其余一律中性——贴片一直是这个规则
+        return percent is <= 20 ? Low : text;
+    }
+
     /// <summary>托盘图标走 GDI+，需要 System.Drawing 的颜色类型。</summary>
     public static System.Drawing.Color ToDrawing(Color color) =>
         System.Drawing.Color.FromArgb(color.A, color.R, color.G, color.B);

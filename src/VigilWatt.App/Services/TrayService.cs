@@ -143,13 +143,17 @@ public sealed class TrayService : IDisposable
     private (IntPtr HIcon, string Tip) Render()
     {
         DeviceStatus? lowest = null;
-        foreach (var d in _services.Manager.Devices)
+        foreach (var merged in DeviceMergeResolver.Build(_services.Manager.Devices, _services.Manager.MergeGroups,
+                                                         _services.Settings.DeviceOrder,
+                                                         _services.Settings.DeviceCustomizations))
         {
-            if (!d.IsOnline || d.BatteryPercent is not { } p) continue;
+            if (!merged.IsOnline) continue;
+            var d = merged.Primary;
+            if (d.BatteryPercent is not { } p) continue;
             // 本机电量不参与托盘的"最低电量"取值（用户 2026-10-06 明确）：笔记本正常用到 30% 是常态，
             // 让它把托盘染红会盖掉"外设快没电了"这个真正的信号。它仍进设备列表/小组件/历史统计。
             if (d.Source == DeviceSource.System) continue;
-            if (lowest == null || p < lowest.BatteryPercent) lowest = DevicePresentation.Apply(d, _services.Settings);
+            if (lowest == null || p < lowest.BatteryPercent) lowest = DevicePresentation.Apply(merged, _services.Settings);
         }
 
         int? percent = lowest?.BatteryPercent;
@@ -245,13 +249,15 @@ public sealed class TrayService : IDisposable
             Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)IdOpen, "打开主窗口");
             Native.AppendMenuW(menu, Native.MF_SEPARATOR, IntPtr.Zero, null);
 
-            foreach (var raw in _services.Manager.Devices)
+            foreach (var merged in DeviceMergeResolver.Build(_services.Manager.Devices, _services.Manager.MergeGroups,
+                                                             _services.Settings.DeviceOrder,
+                                                             _services.Settings.DeviceCustomizations))
             {
-                var d = DevicePresentation.Apply(raw, _services.Settings);
+                var d = DevicePresentation.Apply(merged, _services.Settings);
                 deviceIndex++;
-                var text = d.IsOnline
+                var text = merged.IsOnline
                     ? $"{d.DisplayName}　{DeviceStatusFormatter.PercentText(d.BatteryPercent, "?")}" +
-                      (DeviceStatusFormatter.IsCharging(d.Charging) ? " ⚡" : "")
+                      (DeviceStatusFormatter.IsCharging(merged.Charging) ? " ⚡" : "")
                     : $"{d.DisplayName}　离线";
                 Native.AppendMenuW(menu, Native.MF_STRING | Native.MF_GRAYED,
                     (IntPtr)(IdDeviceBase + deviceIndex), text);

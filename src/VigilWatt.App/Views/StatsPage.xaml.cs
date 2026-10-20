@@ -98,9 +98,10 @@ public sealed partial class StatsPage : Page
         var historyEntries = await Task.Run(() => App.Services.History
             .DistinctDevices(DateTimeOffset.Now.AddHours(-hours))
             .ToList());
-        var entries = historyEntries
-            .Select(d => new DeviceEntry(d.DeviceId,
-                DevicePresentation.DisplayName(d.DeviceId, d.Name, App.Services.Settings)))
+        // 合并组：把组内各通道的条目折成一条（用组合 ID，和 RunChart 里的展开规则对应）
+        var groups = App.Services.Manager.MergeGroups;
+        var entries = MergeEntries(historyEntries, groups)
+            .Select(d => new DeviceEntry(d.DeviceId, ResolveDisplayName(d.DeviceId, d.Name, groups)))
             .ToList();
         if (seq != _renderSeq) return;   // 期间又发起了新刷新，丢弃这次过期结果
 
@@ -121,6 +122,52 @@ public sealed partial class StatsPage : Page
 
     private void Device_SelectionChanged(object sender, SelectionChangedEventArgs e) => _ = RenderChartAsync();
 
+    /// <summary>
+    /// 下拉框里的显示名：合并组按组内共用外观取名（与设备页一致），否则回落到历史名。
+    /// 组合 ID（<c>a+b</c>）在 <see cref="AppSettings.DeviceCustomizations"/> 里没有键，必须展开成成员再查。
+    /// </summary>
+    private static string ResolveDisplayName(string deviceId, string fallback,
+                                             IReadOnlyList<IReadOnlyList<string>> groups)
+    {
+        var members = HistoryMergeResolver.ExpandIds(deviceId, groups);
+        var custom = MergedCustomization.Resolve(members, App.Services.Settings.DeviceCustomizations);
+        return !string.IsNullOrWhiteSpace(custom?.Name) ? custom!.Name! : fallback;
+    }
+
+    /// <summary>
+    /// 把 <c>DistinctDevices</c> 的结果按合并组折叠：组内各通道合成一项（组合 ID，名称取最近有数据的通道）。
+    /// 不在组里的设备原样保留。
+    /// </summary>
+    private static List<(string DeviceId, string Name, DateTimeOffset LastSeen)> MergeEntries(
+        List<(string DeviceId, string Name, DateTimeOffset LastSeen)> entries,
+        IReadOnlyList<IReadOnlyList<string>> groups)
+    {
+        var byId = entries.ToDictionary(e => e.DeviceId, StringComparer.Ordinal);
+        var consumed = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<(string, string, DateTimeOffset)>(entries.Count);
+
+        foreach (var group in groups)
+        {
+            var members = group.Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+            if (members.Count == 0) continue;
+            foreach (var m in members) consumed.Add(m.DeviceId);
+
+            if (members.Count == 1)
+            {
+                result.Add(members[0]);
+                continue;
+            }
+            var newest = members.OrderByDescending(m => m.LastSeen).First();
+            result.Add((HistoryMergeResolver.GroupId(members.Select(m => m.DeviceId)),
+                        newest.Name, newest.LastSeen));
+        }
+
+        foreach (var e in entries)
+            if (!consumed.Contains(e.DeviceId)) result.Add(e);
+
+        return result.OrderByDescending(e => e.Item3).ToList();
+    }
+
     private async Task RenderChartAsync()
     {
         // XAML 解析期事件可能先于字段赋值触发，统一判空
@@ -130,9 +177,16 @@ public sealed partial class StatsPage : Page
         var from = DateTimeOffset.Now.AddHours(-GetSelectedHours());
         var to = DateTimeOffset.Now;
         var device = DeviceCombo.SelectedItem as DeviceEntry;
-        var samples = device is null
+        // 合并组的选中项是组合 ID：把组内每个通道都查出来，再按时间归并成一条曲线
+        var memberIds = device is null
+            ? Array.Empty<string>()
+            : HistoryMergeResolver.ExpandIds(device.Id, App.Services.Manager.MergeGroups).ToArray();
+        var samples = memberIds.Length == 0
             ? new List<HistorySample>()
-            : await Task.Run(() => App.Services.History.Query(device.Id, from, to));
+            : await Task.Run(() => memberIds
+                .SelectMany(id => App.Services.History.Query(id, from, to))
+                .OrderBy(s => s.Timestamp)
+                .ToList());
         if (seq != _renderSeq) return;   // 期间又发起了新刷新，丢弃这次过期结果
 
         UpdateKpis(device, samples);
